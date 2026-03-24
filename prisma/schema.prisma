@@ -1,5 +1,7 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Vercel / Linux runtimes need a Linux engine; "native" stays for local Windows/macOS dev
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
