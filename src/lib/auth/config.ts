@@ -1,7 +1,6 @@
 import { NextAuthConfig } from "next-auth";
 import { compare } from "bcryptjs";
 import Credentials from "next-auth/providers/credentials";
-import { db } from "@/lib/db/client";
 import { ZodError } from "zod";
 import { signInSchema } from "@/lib/validations/auth";
 
@@ -15,6 +14,7 @@ export const authConfig: NextAuthConfig = {
       },
       authorize: async (credentials) => {
         try {
+          const { db } = await import("@/lib/db/client");
           const { email, password } = await signInSchema.parseAsync(credentials);
 
           const user = await db.user.findUnique({
@@ -55,9 +55,6 @@ export const authConfig: NextAuthConfig = {
     }),
   ],
   callbacks: {
-    authorized({ auth }) {
-      return !!auth;
-    },
     session({ session, token }) {
       if (token.sub && session.user) {
         session.user.id = token.sub;
@@ -92,36 +89,6 @@ export const authConfig: NextAuthConfig = {
     maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   trustHost: true,
-  // Remove __Host- cookie prefix so cookies work correctly behind PHP reverse proxy
-  cookies: {
-    csrfToken: {
-      name: "authjs.csrf-token",
-      options: {
-        httpOnly: true,
-        sameSite: "lax" as const,
-        path: "/",
-        secure: true,
-      },
-    },
-    sessionToken: {
-      name: "authjs.session-token",
-      options: {
-        httpOnly: true,
-        sameSite: "lax" as const,
-        path: "/",
-        secure: true,
-      },
-    },
-    callbackUrl: {
-      name: "authjs.callback-url",
-      options: {
-        httpOnly: true,
-        sameSite: "lax" as const,
-        path: "/",
-        secure: true,
-      },
-    },
-  },
 };
 
 // Extend the session type

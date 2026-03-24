@@ -6,6 +6,9 @@ export const {
   auth,
   signIn,
   signOut,
-} = NextAuth(authConfig);
+} = NextAuth({
+  ...authConfig,
+  secret: process.env.AUTH_SECRET,
+});
 
 export { authConfig };
