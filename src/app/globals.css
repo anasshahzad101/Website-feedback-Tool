@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--muted));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Annotation canvas styles */
+.annotation-canvas {
+  cursor: crosshair;
+}
+
+.annotation-canvas.panning {
+  cursor: grab;
+}
+
+.annotation-canvas.panning:active {
+  cursor: grabbing;
+}
+
+/* Thread markers */
+.thread-marker {
+  @apply absolute flex items-center justify-center rounded-full text-xs font-bold text-white shadow-lg transition-all duration-200;
+  width: 28px;
+  height: 28px;
+}
+
+.thread-marker:hover {
+  @apply scale-110 shadow-xl;
+}
+
+.thread-marker.open {
+  @apply bg-blue-500;
+}
+
+.thread-marker.in-progress {
+  @apply bg-amber-500;
+}
+
+.thread-marker.resolved {
+  @apply bg-emerald-500;
+}
+
+.thread-marker.closed {
+  @apply bg-slate-500;
+}
+
+.thread-marker.ignored {
+  @apply bg-slate-400;
+}
+
+/* Status badges */
+.status-badge {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+}
+
+.status-badge.open {
+  @apply bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300;
+}
+
+.status-badge.in-progress {
+  @apply bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300;
+}
+
+.status-badge.resolved {
+  @apply bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300;
+}
+
+.status-badge.closed {
+  @apply bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300;
+}
+
+.status-badge.ignored {
+  @apply bg-slate-100 text-slate-500 dark:bg-slate-900/30 dark:text-slate-400;
+}
+
+/* Video player annotations */
+.video-annotation-marker {
+  @apply absolute h-full w-0.5 cursor-pointer transition-all;
+}
+
+.video-annotation-marker:hover {
+  @apply w-1;
+}
+
+/* PDF viewer */
+.pdf-page {
+  @apply relative shadow-lg;
+}
+
+/* Focus styles */
+.focus-ring {
+  @apply focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2;
+}

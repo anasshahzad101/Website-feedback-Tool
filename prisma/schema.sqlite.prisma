@@ -1,0 +1,443 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserRole {
+  OWNER
+  ADMIN
+  PROJECT_MANAGER
+  REVIEWER
+}
+
+enum ProjectRole {
+  MANAGER
+  REVIEWER
+  CLIENT
+}
+
+enum ProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum ReviewItemType {
+  WEBSITE
+  IMAGE
+  PDF
+  VIDEO
+}
+
+enum ReviewMode {
+  LIVE_URL
+  IFRAME_EMBED
+  SCREENSHOT_CAPTURE
+  UPLOADED_ASSET
+}
+
+enum AnnotationType {
+  PIN
+  RECTANGLE
+  ARROW
+  FREEHAND
+  TEXT
+}
+
+enum CommentStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  IGNORED
+}
+
+enum ActivityActionType {
+  CLIENT_CREATED
+  PROJECT_CREATED
+  PROJECT_UPDATED
+  PROJECT_ARCHIVED
+  REVIEW_ITEM_CREATED
+  REVIEW_ITEM_UPDATED
+  REVIEW_ITEM_ARCHIVED
+  REVIEW_REVISION_CREATED
+  COMMENT_THREAD_CREATED
+  COMMENT_REPLY_ADDED
+  STATUS_CHANGED
+  ANNOTATION_CREATED
+  ANNOTATION_UPDATED
+  ANNOTATION_DELETED
+  SHARE_LINK_CREATED
+  SHARE_LINK_REVOKED
+  GUEST_COMMENT_SUBMITTED
+  MEMBER_ASSIGNED
+  GUEST_COMMENTING_CHANGED
+  PASSWORD_RESET_REQUESTED
+}
+
+enum NotificationType {
+  NEW_COMMENT
+  NEW_REPLY
+  STATUS_CHANGED
+  GUEST_COMMENT
+  REVIEW_ITEM_SHARED
+  CLIENT_INVITED
+  PASSWORD_RESET
+  ACCOUNT_SETUP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// ============================================
+// CORE MODELS
+// ============================================
+
+model User {
+  id           String   @id @default(uuid())
+  firstName    String
+  lastName     String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(REVIEWER)
+  isActive     Boolean  @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  apiToken     String?  @unique @map("api_token")
+
+  // Relations
+  createdProjects     Project[]       @relation("ProjectCreatedBy")
+  projectMemberships  ProjectMember[]
+  createdReviewItems  ReviewItem[]    @relation("ReviewItemCreatedBy")
+  createdRevisions    ReviewRevision[] @relation("RevisionCreatedBy")
+  annotations         Annotation[]    @relation("AnnotationCreatedByUser")
+  commentThreads      CommentThread[] @relation("ThreadCreatedByUser")
+  commentMessages     CommentMessage[] @relation("MessageCreatedByUser")
+  activityLogs        ActivityLog[]   @relation("ActivityActorUser")
+  shareLinksCreated ShareLink[]      @relation("ShareLinkCreatedBy")
+  assignedThreads     CommentThread[] @relation("ThreadAssignedTo")
+  emailNotifications  EmailNotification[]
+
+  @@map("users")
+}
+
+model Client {
+  id          String    @id @default(uuid())
+  name        String
+  companyName String?   @map("company_name")
+  email       String
+  phone       String?
+  notes       String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  projects       Project[]
+  projectMembers ProjectMember[]
+
+  @@map("clients")
+}
+
+model Project {
+  id          String         @id @default(uuid())
+  clientId    String         @map("client_id")
+  name        String
+  slug        String
+  description String?
+  status      ProjectStatus  @default(ACTIVE)
+  createdById String         @map("created_by_id")
+  archivedAt  DateTime?      @map("archived_at")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  client      Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdBy   User            @relation("ProjectCreatedBy", fields: [createdById], references: [id])
+  members     ProjectMember[]
+  reviewItems ReviewItem[]
+  shareLinks  ShareLink[]
+
+  @@unique([clientId, slug])
+  @@index([clientId])
+  @@index([status])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id          String      @id @default(uuid())
+  projectId   String      @map("project_id")
+  userId      String?     @map("user_id")
+  clientId    String?     @map("client_id")
+  roleInProject ProjectRole @default(REVIEWER) @map("role_in_project")
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  // Relations
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client  Client? @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([clientId])
+  @@map("project_members")
+}
+
+model ReviewItem {
+  id                    String         @id @default(uuid())
+  projectId             String         @map("project_id")
+  title                 String
+  type                  ReviewItemType
+  sourceUrl             String?        @map("source_url")
+  uploadedFilePath      String?        @map("uploaded_file_path")
+  thumbnailPath         String?        @map("thumbnail_path")
+  originalFileName      String?        @map("original_file_name")
+  mimeType              String?        @map("mime_type")
+  width                 Int?
+  height                Int?
+  durationSeconds       Int?           @map("duration_seconds")
+  reviewMode            ReviewMode     @map("review_mode")
+  createdById           String         @map("created_by_id")
+  currentRevisionId     String?        @map("current_revision_id")
+  isPublicShareEnabled  Boolean        @default(false) @map("is_public_share_enabled")
+  publicShareToken      String?        @unique @map("public_share_token")
+  guestCommentingEnabled Boolean       @default(true) @map("guest_commenting_enabled")
+  createdAt             DateTime       @default(now()) @map("created_at")
+  updatedAt             DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  project         Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy       User             @relation("ReviewItemCreatedBy", fields: [createdById], references: [id])
+  currentRevision ReviewRevision?  @relation("CurrentRevision", fields: [currentRevisionId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  revisions       ReviewRevision[] @relation("ItemRevisions")
+  annotations     Annotation[]
+  commentThreads  CommentThread[]
+  shareLinks      ShareLink[]
+
+  @@index([projectId])
+  @@index([type])
+  @@index([publicShareToken])
+  @@map("review_items")
+}
+
+model ReviewRevision {
+  id               String    @id @default(uuid())
+  reviewItemId     String    @map("review_item_id")
+  revisionLabel    String?   @map("revision_label")
+  revisionDate     DateTime  @map("revision_date")
+  uploadedFilePath String?   @map("uploaded_file_path")
+  sourceUrl        String?   @map("source_url")
+  snapshotPath     String?   @map("snapshot_path")
+  notes            String?
+  createdById      String    @map("created_by_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  reviewItem        ReviewItem      @relation("ItemRevisions", fields: [reviewItemId], references: [id], onDelete: Cascade)
+  currentForItem    ReviewItem[]    @relation("CurrentRevision")
+  createdBy         User            @relation("RevisionCreatedBy", fields: [createdById], references: [id])
+  annotations       Annotation[]
+  commentThreads    CommentThread[]
+
+  @@index([reviewItemId])
+  @@index([revisionDate])
+  @@map("review_revisions")
+}
+
+model Annotation {
+  id                    String          @id @default(uuid())
+  reviewItemId          String          @map("review_item_id")
+  reviewRevisionId      String?         @map("review_revision_id")
+  commentThreadId       String?         @map("comment_thread_id")
+  annotationType        AnnotationType  @map("annotation_type")
+  x                     Float
+  y                     Float
+  xPercent              Float           @map("x_percent")
+  yPercent              Float           @map("y_percent")
+  width                 Float?
+  height                Float?
+  widthPercent          Float?          @map("width_percent")
+  heightPercent         Float?          @map("height_percent")
+  pointsJson            String?         @map("points_json")
+  targetFrame           Int?            @map("target_frame")
+  targetTimestampMs     Int?            @map("target_timestamp_ms")
+  viewportMetaJson      String?         @map("viewport_meta_json")
+  screenshotContextPath String?         @map("screenshot_context_path")
+  color                 String          @default("#3b82f6")
+  createdByUserId       String?         @map("created_by_user_id")
+  createdByGuestId      String?         @map("created_by_guest_id")
+  createdAt             DateTime        @default(now()) @map("created_at")
+  updatedAt             DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  reviewItem     ReviewItem       @relation(fields: [reviewItemId], references: [id], onDelete: Cascade)
+  reviewRevision ReviewRevision?  @relation(fields: [reviewRevisionId], references: [id], onDelete: SetNull)
+  commentThread  CommentThread?   @relation("AnnotationThread")
+  createdByUser  User?            @relation("AnnotationCreatedByUser", fields: [createdByUserId], references: [id])
+  createdByGuest GuestIdentity?   @relation("AnnotationCreatedByGuest", fields: [createdByGuestId], references: [id])
+
+  @@index([reviewItemId])
+  @@index([reviewRevisionId])
+  @@index([commentThreadId])
+  @@index([createdByUserId])
+  @@index([createdByGuestId])
+  @@map("annotations")
+}
+
+model CommentThread {
+  id                String        @id @default(uuid())
+  reviewItemId      String        @map("review_item_id")
+  reviewRevisionId  String?       @map("review_revision_id")
+  rootAnnotationId  String?       @unique @map("root_annotation_id")
+  status            CommentStatus @default(OPEN)
+  createdByUserId   String?       @map("created_by_user_id")
+  createdByGuestId  String?       @map("created_by_guest_id")
+  assignedToUserId  String?       @map("assigned_to_user_id")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  reviewItem      ReviewItem       @relation(fields: [reviewItemId], references: [id], onDelete: Cascade)
+  reviewRevision  ReviewRevision?  @relation(fields: [reviewRevisionId], references: [id], onDelete: SetNull)
+  rootAnnotation  Annotation?      @relation("AnnotationThread", fields: [rootAnnotationId], references: [id], onDelete: SetNull)
+  messages        CommentMessage[]
+  createdByUser   User?            @relation("ThreadCreatedByUser", fields: [createdByUserId], references: [id])
+  createdByGuest  GuestIdentity?   @relation("ThreadCreatedByGuest", fields: [createdByGuestId], references: [id])
+  assignedTo      User?            @relation("ThreadAssignedTo", fields: [assignedToUserId], references: [id])
+
+  @@index([reviewItemId])
+  @@index([reviewRevisionId])
+  @@index([status])
+  @@index([assignedToUserId])
+  @@map("comment_threads")
+}
+
+model CommentMessage {
+  id               String         @id @default(uuid())
+  threadId         String         @map("thread_id")
+  body             String
+  createdByUserId  String?        @map("created_by_user_id")
+  createdByGuestId String?        @map("created_by_guest_id")
+  isSystemMessage  Boolean        @default(false) @map("is_system_message")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  thread         CommentThread  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  createdByUser  User?          @relation("MessageCreatedByUser", fields: [createdByUserId], references: [id])
+  createdByGuest GuestIdentity? @relation("MessageCreatedByGuest", fields: [createdByGuestId], references: [id])
+
+  @@index([threadId])
+  @@index([createdByUserId])
+  @@index([createdByGuestId])
+  @@map("comment_messages")
+}
+
+model GuestIdentity {
+  id          String    @id @default(uuid())
+  name        String
+  email       String?
+  accessToken String?   @unique @map("access_token")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  annotations    Annotation[]    @relation("AnnotationCreatedByGuest")
+  commentThreads CommentThread[] @relation("ThreadCreatedByGuest")
+  messages       CommentMessage[] @relation("MessageCreatedByGuest")
+  activityLogs   ActivityLog[]   @relation("ActivityActorGuest")
+
+  @@map("guest_identities")
+}
+
+model ShareLink {
+  id                 String     @id @default(uuid())
+  projectId          String?    @map("project_id")
+  reviewItemId       String?    @map("review_item_id")
+  token              String     @unique
+  allowGuestComments Boolean    @default(true) @map("allow_guest_comments")
+  allowGuestView     Boolean    @default(true) @map("allow_guest_view")
+  expiresAt          DateTime?  @map("expires_at")
+  passwordProtected  Boolean    @default(false) @map("password_protected")
+  passwordHash       String?    @map("password_hash")
+  createdById        String     @map("created_by_id")
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  project    Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  reviewItem ReviewItem? @relation(fields: [reviewItemId], references: [id], onDelete: Cascade)
+  createdBy  User       @relation("ShareLinkCreatedBy", fields: [createdById], references: [id])
+
+  @@index([projectId])
+  @@index([reviewItemId])
+  @@index([token])
+  @@map("share_links")
+}
+
+model ActivityLog {
+  id             String           @id @default(uuid())
+  entityType     String           @map("entity_type")
+  entityId       String           @map("entity_id")
+  actionType     ActivityActionType @map("action_type")
+  actorUserId    String?          @map("actor_user_id")
+  actorGuestId   String?          @map("actor_guest_id")
+  metaJson       String?          @map("meta_json")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  // Relations — entityType/entityId are stored as strings (polymorphic, no FK constraints)
+  actorUser  User?          @relation("ActivityActorUser", fields: [actorUserId], references: [id])
+  actorGuest GuestIdentity? @relation("ActivityActorGuest", fields: [actorGuestId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([actionType])
+  @@index([actorUserId])
+  @@index([actorGuestId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+model EmailNotification {
+  id            String              @id @default(uuid())
+  recipientEmail String             @map("recipient_email")
+  recipientUserId String?           @map("recipient_user_id")
+  type          NotificationType
+  payloadJson   String              @map("payload_json")
+  sentAt        DateTime?           @map("sent_at")
+  failedAt      DateTime?           @map("failed_at")
+  status        NotificationStatus  @default(PENDING)
+  errorMessage  String?             @map("error_message")
+  createdAt     DateTime            @default(now()) @map("created_at")
+
+  // Relations
+  recipientUser User? @relation(fields: [recipientUserId], references: [id])
+
+  @@index([recipientUserId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("email_notifications")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@index([email])
+  @@map("password_reset_tokens")
+}
