@@ -53,8 +53,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Look up user by api_token (raw SQL so we don't depend on generated client having apiToken)
-    const userRows = await db.$queryRaw<[{ id: string }][]>`SELECT id FROM users WHERE api_token = ${apiToken}`;
-    const user = userRows[0] ? { id: userRows[0].id } : null;
+    const userRows = await db.$queryRaw<{ id: string }[]>`SELECT id FROM users WHERE api_token = ${apiToken}`;
+    const user = userRows[0] ?? null;
 
     if (!user) {
       return NextResponse.json({ error: "Invalid API token" }, { status: 401 });
@@ -122,42 +122,37 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Create thread and first message
+    // Build first message body (CommentThread has no pageUrl/pageTitle/sectionPath; no commentAttachment model)
+    let messageBody = (commentText || "").trim();
+    const contextParts: string[] = [];
+    if (pageTitle) contextParts.push(`Page: ${pageTitle}`);
+    if (sectionPath) contextParts.push(`Section: ${sectionPath}`);
+    if (pageUrl) contextParts.push(`URL: ${pageUrl}`);
+    if (contextParts.length) {
+      messageBody = `${contextParts.join("\n")}\n\n${messageBody}`.trim();
+    }
+
+    for (const att of attachments) {
+      if (!att?.dataUrl) continue;
+      const filePath = await saveDataUrlToUploads(att.dataUrl, "attachments");
+      const name = att.fileName || "attachment";
+      messageBody += `\n\n[${name}](${filePath})`;
+    }
+
     const thread = await db.commentThread.create({
       data: {
         reviewItemId: reviewItem.id,
         rootAnnotationId: annotation.id,
         createdByUserId: user.id,
-        pageUrl,
-        pageTitle,
-        sectionPath,
         status: "OPEN",
         messages: {
           create: {
-            body: commentText || "",
+            body: messageBody,
             createdByUserId: user.id,
           },
         },
       },
-      include: { messages: true },
     });
-
-    const message = thread.messages[0];
-
-    // Save attachments (images, audio, pdf, etc.)
-    for (const att of attachments) {
-      if (!att?.dataUrl) continue;
-      const filePath = await saveDataUrlToUploads(att.dataUrl, "attachments");
-      await db.commentAttachment.create({
-        data: {
-          messageId: message.id,
-          type: att.type || "file",
-          url: filePath,
-          fileName: att.fileName ?? null,
-          contentType: att.dataUrl.split(";")[0].replace("data:", "") ?? null,
-        },
-      });
-    }
 
     return NextResponse.json({
       ok: true,
