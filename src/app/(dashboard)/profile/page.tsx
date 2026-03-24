@@ -45,11 +45,6 @@ export default async function ProfilePage() {
                 Edit profile & settings
               </Link>
             </Button>
-            <Button asChild variant="outline" size="sm" className="border-slate-200">
-              <Link href="/api-access">
-                API access for Chrome extension
-              </Link>
-            </Button>
           </div>
         </CardContent>
       </Card>
