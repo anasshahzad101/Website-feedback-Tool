@@ -301,6 +301,13 @@ The architecture supports future browser extension integration:
 - Cross-origin annotation submission
 - OAuth-like token authentication
 
+## Source
+
+- **GitHub**: [Click-Track-Marketing-Feedback-Tool](https://github.com/anasshahzad101/Click-Track-Marketing-Feedback-Tool)
+- Made with [Cursor](https://cursor.com)
+
+_Deploy note:_ Vercel builds use Prisma Linux binary targets (`rhel-openssl-3.0.x`); Puppeteer was removed as unused (screenshots use Microlink).
+
 ## License
 
 Private - SpeedX Marketing Internal Use Only
