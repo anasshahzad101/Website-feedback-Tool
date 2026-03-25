@@ -119,6 +119,10 @@ If the database has **no users** (typical on a fresh production MySQL after migr
 
 **MySQL:** apply the `app_settings` table (included in Prisma migrations under `prisma/migrations/`) with `npx prisma migrate deploy` after deploy.
 
+### Hostinger: all variables in one place
+
+Fill in **[`hostinger.env.template`](hostinger.env.template)** with your MySQL URL, domain, and a generated `AUTH_SECRET`, then copy each variable into **hPanel → Node.js → Environment variables**. The repo cannot set Hostinger for you; that file is the full checklist.
+
 ### Demo credentials (local seed only)
 
 After **`npm run db:local:seed`** or **`npm run db:seed`**, users are defined in [prisma/seed.ts](prisma/seed.ts) (e.g. owner `owner@speedxmarketing.com` / `admin123`). **Change passwords** before any production deploy; do not use demo logins on a public server.
