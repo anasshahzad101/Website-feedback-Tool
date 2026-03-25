@@ -113,6 +113,12 @@ npm run dev
 
 Use **`npm run db:local:*`** when `USE_SQLITE=true`; use **`npm run db:migrate`** / **`npm run db:deploy`** with MySQL.
 
+### First deploy (no users yet)
+
+If the database has **no users** (typical on a fresh production MySQL after migrations), visiting `/` sends you to **`/setup`** to create the **owner** account and optional branding. After that, use **Settings → White-label branding** (Owner/Admin) to change **name, tagline, and logo**. Env vars `NEXT_PUBLIC_BRAND_NAME` / `NEXT_PUBLIC_APP_NAME` still apply as fallbacks when the DB row is empty.
+
+**MySQL:** apply the `app_settings` table (included in Prisma migrations under `prisma/migrations/`) with `npx prisma migrate deploy` after deploy.
+
 ### Demo credentials (local seed only)
 
 After **`npm run db:local:seed`** or **`npm run db:seed`**, users are defined in [prisma/seed.ts](prisma/seed.ts) (e.g. owner `owner@speedxmarketing.com` / `admin123`). **Change passwords** before any production deploy; do not use demo logins on a public server.

@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { db, NotificationType, NotificationStatus } from "@/lib/db/client";
-import { publicAppName, publicBrandName } from "@/lib/brand";
+import { publicBrandName } from "@/lib/brand";
+import { getPublicBranding, type PublicBranding } from "@/lib/app-settings";
 
 interface EmailConfig {
   host: string;
@@ -97,7 +98,10 @@ class EmailService {
     for (const notification of pending) {
       try {
         const payload = JSON.parse(notification.payloadJson);
-        const emailPayload = this.buildEmailPayload(notification.type, payload);
+        const emailPayload = await this.buildEmailPayload(
+          notification.type,
+          payload
+        );
 
         if (emailPayload) {
           const sent = await this.sendEmail({
@@ -127,59 +131,60 @@ class EmailService {
     }
   }
 
-  private buildEmailPayload(
+  private async buildEmailPayload(
     type: NotificationType,
     data: Record<string, unknown>
-  ): { subject: string; html: string } | null {
+  ): Promise<{ subject: string; html: string } | null> {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const branding = await getPublicBranding();
 
     switch (type) {
       case NotificationType.NEW_COMMENT:
         return {
           subject: `New comment on "${data.reviewItemTitle}"`,
-          html: this.renderNewCommentEmail(data, appUrl),
+          html: this.renderNewCommentEmail(data, appUrl, branding),
         };
 
       case NotificationType.NEW_REPLY:
         return {
           subject: `New reply to your comment`,
-          html: this.renderNewReplyEmail(data, appUrl),
+          html: this.renderNewReplyEmail(data, appUrl, branding),
         };
 
       case NotificationType.STATUS_CHANGED:
         return {
           subject: `Comment status changed to ${data.newStatus}`,
-          html: this.renderStatusChangedEmail(data, appUrl),
+          html: this.renderStatusChangedEmail(data, appUrl, branding),
         };
 
       case NotificationType.GUEST_COMMENT:
         return {
           subject: `New guest comment on "${data.reviewItemTitle}"`,
-          html: this.renderGuestCommentEmail(data, appUrl),
+          html: this.renderGuestCommentEmail(data, appUrl, branding),
         };
 
       case NotificationType.REVIEW_ITEM_SHARED:
         return {
           subject: `New review item shared: "${data.reviewItemTitle}"`,
-          html: this.renderReviewItemSharedEmail(data, appUrl),
+          html: this.renderReviewItemSharedEmail(data, appUrl, branding),
         };
 
       case NotificationType.CLIENT_INVITED:
         return {
           subject: `You've been invited to review "${data.projectName}"`,
-          html: this.renderClientInvitedEmail(data, appUrl),
+          html: this.renderClientInvitedEmail(data, appUrl, branding),
         };
 
       case NotificationType.PASSWORD_RESET:
         return {
           subject: "Password reset request",
-          html: this.renderPasswordResetEmail(data, appUrl),
+          html: this.renderPasswordResetEmail(data, appUrl, branding),
         };
 
       case NotificationType.ACCOUNT_SETUP:
         return {
-          subject: `Your ${publicBrandName()} account`,
-          html: this.renderAccountSetupEmail(data, appUrl),
+          subject: `Your ${branding.brandName} account`,
+          html: this.renderAccountSetupEmail(data, appUrl, branding),
         };
 
       default:
@@ -187,9 +192,9 @@ class EmailService {
     }
   }
 
-  private renderBaseEmail(content: string): string {
-    const brand = publicBrandName();
-    const app = publicAppName();
+  private renderBaseEmail(content: string, branding: PublicBranding): string {
+    const brand = branding.brandName;
+    const app = branding.appName;
     return `
       <!DOCTYPE html>
       <html>
@@ -223,7 +228,11 @@ class EmailService {
     `;
   }
 
-  private renderNewCommentEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderNewCommentEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>New Comment</h2>
       <p><strong>${data.authorName}</strong> left a comment on <strong>"${data.reviewItemTitle}"</strong>:</p>
@@ -231,10 +240,14 @@ class EmailService {
         ${data.message}
       </blockquote>
       <a href="${appUrl}/review/${data.reviewItemId}" class="button">View Comment</a>
-    `);
+    `, branding);
   }
 
-  private renderNewReplyEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderNewReplyEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>New Reply</h2>
       <p><strong>${data.authorName}</strong> replied to your comment:</p>
@@ -242,19 +255,27 @@ class EmailService {
         ${data.message}
       </blockquote>
       <a href="${appUrl}/review/${data.reviewItemId}?thread=${data.threadId}" class="button">View Reply</a>
-    `);
+    `, branding);
   }
 
-  private renderStatusChangedEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderStatusChangedEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>Status Changed</h2>
       <p>A comment on <strong>"${data.reviewItemTitle}"</strong> has been updated:</p>
       <p><strong>From:</strong> ${data.oldStatus} → <strong>To:</strong> ${data.newStatus}</p>
       <a href="${appUrl}/review/${data.reviewItemId}?thread=${data.threadId}" class="button">View Comment</a>
-    `);
+    `, branding);
   }
 
-  private renderGuestCommentEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderGuestCommentEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>New Guest Comment</h2>
       <p><strong>${data.guestName}</strong> (${data.guestEmail || "no email"}) left a comment on <strong>"${data.reviewItemTitle}"</strong>:</p>
@@ -262,20 +283,28 @@ class EmailService {
         ${data.message}
       </blockquote>
       <a href="${appUrl}/review/${data.reviewItemId}?thread=${data.threadId}" class="button">View Comment</a>
-    `);
+    `, branding);
   }
 
-  private renderReviewItemSharedEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderReviewItemSharedEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>New Review Item</h2>
       <p><strong>${data.sharedBy}</strong> shared a new item with you for review:</p>
       <p style="font-size: 18px; font-weight: 600; margin: 20px 0;">${data.reviewItemTitle}</p>
       <p>Project: ${data.projectName}</p>
       <a href="${appUrl}/review/${data.reviewItemId}" class="button">Start Review</a>
-    `);
+    `, branding);
   }
 
-  private renderClientInvitedEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderClientInvitedEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>You're Invited</h2>
       <p>You've been invited to collaborate on the project <strong>"${data.projectName}"</strong>.</p>
@@ -284,29 +313,37 @@ class EmailService {
       <p style="margin-top: 20px; font-size: 14px; color: #64748b;">
         If you don't have an account yet, please contact your project manager for setup instructions.
       </p>
-    `);
+    `, branding);
   }
 
-  private renderPasswordResetEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderPasswordResetEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>Password Reset</h2>
-      <p>You requested a password reset for your ${publicAppName()} account.</p>
+      <p>You requested a password reset for your ${branding.appName} account.</p>
       <p>Click the button below to reset your password. This link expires in 1 hour.</p>
       <a href="${appUrl}/reset-password?token=${data.token}" class="button">Reset Password</a>
       <p style="margin-top: 20px; font-size: 14px; color: #64748b;">
         If you didn't request this reset, please ignore this email.
       </p>
-    `);
+    `, branding);
   }
 
-  private renderAccountSetupEmail(data: Record<string, unknown>, appUrl: string): string {
+  private renderAccountSetupEmail(
+    data: Record<string, unknown>,
+    appUrl: string,
+    branding: PublicBranding
+  ): string {
     return this.renderBaseEmail(`
       <h2>Your Account is Ready</h2>
-      <p>An account has been created for you on ${publicAppName()}.</p>
+      <p>An account has been created for you on ${branding.appName}.</p>
       <p><strong>Email:</strong> ${data.email}</p>
       <p>Click the button below to set your password and get started.</p>
       <a href="${appUrl}/reset-password?token=${data.token}" class="button">Set Password</a>
-    `);
+    `, branding);
   }
 }
 

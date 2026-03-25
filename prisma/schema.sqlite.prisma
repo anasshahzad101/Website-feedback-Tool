@@ -442,3 +442,14 @@ model PasswordResetToken {
   @@index([email])
   @@map("password_reset_tokens")
 }
+
+model AppSettings {
+  id        String   @id @default("default")
+  brandName String   @default("Website Feedback Tool") @map("brand_name")
+  appName   String   @default("Website Feedback Tool") @map("app_name")
+  logoPath  String?  @map("logo_path")
+  tagline   String?
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}

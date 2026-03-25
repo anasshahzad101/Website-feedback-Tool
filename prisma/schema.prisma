@@ -445,3 +445,15 @@ model PasswordResetToken {
   @@index([email])
   @@map("password_reset_tokens")
 }
+
+/// Singleton row (id = "default") for white-label branding; overrides NEXT_PUBLIC_* when set.
+model AppSettings {
+  id        String   @id @default("default")
+  brandName String   @default("Website Feedback Tool") @map("brand_name")
+  appName   String   @default("Website Feedback Tool") @map("app_name")
+  logoPath  String?  @map("logo_path") @db.VarChar(500)
+  tagline   String?  @db.VarChar(191)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}

@@ -13,7 +13,8 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/utils";
 import { LogOut, User, Settings } from "lucide-react";
 import Link from "next/link";
-import { publicBrandName } from "@/lib/brand";
+import { useBranding } from "@/contexts/branding-context";
+import { BrandMark } from "@/components/brand/brand-mark";
 
 interface DashboardHeaderProps {
   user: {
@@ -26,21 +27,22 @@ interface DashboardHeaderProps {
 }
 
 export function DashboardHeader({ user }: DashboardHeaderProps) {
+  const { brandName, tagline } = useBranding();
+  const sub = (tagline?.trim() || "FEEDBACK TOOL").toUpperCase();
+
   return (
     <header className="border-b bg-card sticky top-0 z-40">
       <div className="flex h-16 items-center justify-between px-6 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-slate-50">
         <div className="flex items-center gap-4">
           <Link href="/dashboard" className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/90 text-primary-foreground shadow-sm ring-1 ring-white/10">
-                <span className="text-lg font-black leading-none">W</span>
-              </div>
+              <BrandMark className="h-9 w-9" />
               <div className="flex flex-col leading-tight">
                 <span className="text-sm font-semibold tracking-tight">
-                  {publicBrandName()}
+                  {brandName}
                 </span>
                 <span className="text-[11px] uppercase tracking-[0.14em] text-slate-300">
-                  FEEDBACK TOOL
+                  {sub}
                 </span>
               </div>
             </div>

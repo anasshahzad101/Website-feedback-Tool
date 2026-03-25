@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Globe, Image, FileText, Video, ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { publicBrandName } from "@/lib/brand";
+import { useBranding } from "@/contexts/branding-context";
+import { BrandMark } from "@/components/brand/brand-mark";
 
 interface GuestReviewPageProps {
   shareLink: ShareLink;
@@ -61,6 +62,28 @@ const typeIcons = {
   VIDEO: Video,
 };
 
+function GuestHeaderBrand({
+  showNameOnMobile = false,
+}: {
+  showNameOnMobile?: boolean;
+}) {
+  const { brandName } = useBranding();
+  return (
+    <div className="flex items-center gap-2">
+      <BrandMark className="h-8 w-8 rounded-md" />
+      <span
+        className={
+          showNameOnMobile
+            ? "font-semibold"
+            : "font-semibold hidden sm:inline"
+        }
+      >
+        {brandName}
+      </span>
+    </div>
+  );
+}
+
 export function GuestReviewPage({
   shareLink,
   reviewItem,
@@ -89,14 +112,7 @@ export function GuestReviewPage({
         <header className="border-b bg-card px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-primary rounded-md flex items-center justify-center">
-                  <span className="text-primary-foreground font-bold">S</span>
-                </div>
-                <span className="font-semibold hidden sm:inline">
-                  {publicBrandName()}
-                </span>
-              </div>
+              <GuestHeaderBrand />
               <span className="text-muted-foreground">|</span>
               <div className="flex items-center gap-2">
                 <div className="p-1.5 rounded bg-primary/10">
@@ -148,14 +164,7 @@ export function GuestReviewPage({
         {/* Header */}
         <header className="border-b bg-card px-6 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-primary rounded-md flex items-center justify-center">
-                <span className="text-primary-foreground font-bold">S</span>
-              </div>
-              <span className="font-semibold">
-                {publicBrandName()}
-              </span>
-            </div>
+            <GuestHeaderBrand showNameOnMobile />
           </div>
         </header>
 
