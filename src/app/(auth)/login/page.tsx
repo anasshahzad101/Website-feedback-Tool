@@ -31,7 +31,13 @@ function LoginForm() {
     try {
       // Fetch the CSRF token first (required by NextAuth)
       const csrfRes = await fetch("/api/auth/csrf");
-      if (!csrfRes.ok) throw new Error("Failed to get CSRF token");
+      if (!csrfRes.ok) {
+        toast.error(
+          "Sign-in could not start. On the server, set AUTH_SECRET (32+ random characters), AUTH_TRUST_HOST=true, AUTH_URL and NEXT_PUBLIC_APP_URL to your exact live URL (https, no trailing slash), redeploy, then open /api/health to verify."
+        );
+        setIsLoading(false);
+        return;
+      }
       const { csrfToken } = await csrfRes.json();
 
       // Submit credentials as a native form POST so the browser handles the redirect

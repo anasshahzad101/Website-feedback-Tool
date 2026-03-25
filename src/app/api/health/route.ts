@@ -23,7 +23,7 @@ export async function GET() {
       ? process.env.AUTH_SECRET?.trim()
         ? "AUTH_SECRET"
         : "NEXTAUTH_SECRET"
-      : "none — set AUTH_SECRET in Vercel (32+ chars) and redeploy",
+      : "none — set AUTH_SECRET (32+ chars) in host env and redeploy",
     authTrustHost: process.env.AUTH_TRUST_HOST ?? "not set (OK on Vercel if VERCEL=1)",
     authUrl: process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? "not set",
     nextPublicAppUrl: process.env.NEXT_PUBLIC_APP_URL ?? "not set",
