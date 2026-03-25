@@ -11,6 +11,10 @@ export default async function HomePage() {
     redirect("/dashboard");
   }
 
+  if (!process.env.DATABASE_URL?.trim()) {
+    redirect("/setup");
+  }
+
   if (await needsInitialSetup()) {
     redirect("/setup");
   }

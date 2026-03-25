@@ -6,18 +6,24 @@ import { db } from "@/lib/db/client";
  * Open https://yourdomain.com/api/health on the server to debug login issues.
  */
 export async function GET() {
-  let dbStatus: "ok" | "error" = "error";
-  try {
-    await db.$queryRaw`SELECT 1`;
-    dbStatus = "ok";
-  } catch {
-    // DB unreachable or not migrated
+  const databaseUrlSet = !!process.env.DATABASE_URL?.trim();
+
+  let dbStatus: "ok" | "error" | "skipped" = "skipped";
+  if (databaseUrlSet) {
+    dbStatus = "error";
+    try {
+      await db.$queryRaw`SELECT 1`;
+      dbStatus = "ok";
+    } catch {
+      // Wrong credentials, host, or tables missing
+    }
   }
 
   const authSecret =
     process.env.AUTH_SECRET?.trim() || process.env.NEXTAUTH_SECRET?.trim();
 
   return NextResponse.json({
+    databaseUrlSet,
     authSecretSet: !!authSecret,
     authSecretSource: authSecret
       ? process.env.AUTH_SECRET?.trim()

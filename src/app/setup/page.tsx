@@ -1,12 +1,23 @@
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db/client";
 import { SetupForm } from "./setup-form";
+import { SetupBlocked } from "./setup-blocked";
 
 export const dynamic = "force-dynamic";
 
 export default async function SetupPage() {
-  const count = await db.user.count();
-  if (count > 0) {
+  if (!process.env.DATABASE_URL?.trim()) {
+    return <SetupBlocked reason="missing-database-url" />;
+  }
+
+  let userCount = 0;
+  try {
+    userCount = await db.user.count();
+  } catch {
+    return <SetupBlocked reason="database-error" />;
+  }
+
+  if (userCount > 0) {
     redirect("/login");
   }
 
