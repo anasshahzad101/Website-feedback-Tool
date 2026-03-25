@@ -84,8 +84,8 @@ export async function POST(request: NextRequest) {
         create: {
           id: "system-default-client",
           name: "General",
-          companyName: "Click Track Marketing",
-          email: "general@clicktrackmarketing.com",
+          companyName: "Default organization",
+          email: "contact@example.com",
         },
       });
       clientId = defaultClient.id;

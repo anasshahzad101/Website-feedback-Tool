@@ -35,9 +35,9 @@ A production-ready internal web application for visual review and feedback manag
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS
 - **UI Components**: shadcn/ui
-- **Database**: PostgreSQL
+- **Database**: MySQL (production) — optional SQLite for local dev without MySQL (`USE_SQLITE=true`)
 - **ORM**: Prisma
-- **Authentication**: NextAuth.js with credentials provider
+- **Authentication**: Auth.js (NextAuth v5) with credentials provider
 - **State Management**: React Query + Zustand (annotation state)
 - **Validation**: Zod
 - **Email**: Nodemailer
@@ -78,66 +78,44 @@ src/
 ## Setup Instructions
 
 ### Prerequisites
-- Node.js 18+ 
-- PostgreSQL 14+
-- SMTP email provider (Gmail, SendGrid, etc.)
+- **Node.js 20+** (see [`.nvmrc`](.nvmrc); `nvm use` if you use nvm)
+- **MySQL** for production-like setup, **or** enable **SQLite** for quick local dev (see below)
+- SMTP provider if you want outbound email (optional for local try-out)
 
-### Environment Variables
+### Environment variables
 
-Create a `.env` file:
+1. Copy the example file (this file is safe to commit; **never commit `.env`**):
 
-```env
-# Database
-DATABASE_URL="postgresql://postgres:password@localhost:5432/speedx_feedback?schema=public"
+   ```bash
+   cp .env.example .env
+   ```
 
-# NextAuth
-AUTH_SECRET="your-auth-secret-here-min-32-chars-long"
-AUTH_TRUST_HOST="true"
+2. Edit `.env`. For **local dev without MySQL**, keep `USE_SQLITE=true` in `.env` and use the SQLite scripts. For **MySQL**, set `USE_SQLITE=false` (or remove it) and set `DATABASE_URL` to your MySQL connection string.
 
-# App
-NEXT_PUBLIC_APP_URL="http://localhost:3000"
-NEXT_PUBLIC_APP_NAME="SpeedX Marketing — Feedback Tool"
-NEXT_PUBLIC_BRAND_NAME="SpeedX Marketing"
+3. **Production / hosted**: set `AUTH_URL` and `NEXT_PUBLIC_APP_URL` to your public HTTPS origin (no trailing slash), and a strong `AUTH_SECRET` (32+ characters).
 
-# Storage
-STORAGE_TYPE="local"
-UPLOAD_DIR="./public/uploads"
-
-# Email (SMTP)
-SMTP_HOST="smtp.gmail.com"
-SMTP_PORT="587"
-SMTP_USER="your-email@gmail.com"
-SMTP_PASSWORD="your-app-password"
-SMTP_FROM="SpeedX Marketing <noreply@speedxmarketing.com>"
-```
+All variables are documented in [`.env.example`](.env.example).
 
 ### Installation
 
 ```bash
-# Install dependencies
 npm install
 
-# Generate Prisma client
-npm run db:generate
+# Prisma client (respects USE_SQLITE in .env via postinstall script)
+# SQLite-only local setup:
+npm run db:local:setup
 
-# Run database migrations
-npm run db:migrate
+# OR with MySQL: create DB, then:
+# npm run db:generate && npm run db:migrate && npm run db:seed
 
-# Seed database with demo data
-npm run db:seed
-
-# Start development server
 npm run dev
 ```
 
-### Demo Credentials
+Use **`npm run db:local:*`** when `USE_SQLITE=true`; use **`npm run db:migrate`** / **`npm run db:deploy`** with MySQL.
 
-After seeding, you can log in with:
+### Demo credentials (local seed only)
 
-- **Owner**: `owner@speedxmarketing.com` / `admin123`
-- **Admin**: `admin@speedxmarketing.com` / `admin123`
-- **Project Manager**: `pm@speedxmarketing.com` / `pm123`
-- **Reviewer**: `reviewer@speedxmarketing.com` / `reviewer123`
+After **`npm run db:local:seed`** or **`npm run db:seed`**, users are defined in [prisma/seed.ts](prisma/seed.ts) (e.g. owner `owner@speedxmarketing.com` / `admin123`). **Change passwords** before any production deploy; do not use demo logins on a public server.
 
 ## Database Schema
 
@@ -202,49 +180,31 @@ Key entities:
 ### Activity
 - `GET /api/activity` - Get activity log
 
+## GitHub & hosting (e.g. Hostinger)
+
+This repo is set up so you can push to GitHub and import the project from there in **Hostinger hPanel** (Node.js → **Import from GitHub**).
+
+**Do not commit:**
+
+- `.env` or any file containing real secrets (see [.gitignore](.gitignore); [`.env.example`](.env.example) is the template only)
+
+**Do commit:**
+
+- `package.json` / `package-lock.json`, Prisma schema, application source, and `.env.example`
+
+**On the server (after import):**
+
+- Set environment variables in the panel (MySQL `DATABASE_URL`, `AUTH_SECRET`, `AUTH_TRUST_HOST=true`, `AUTH_URL`, `NEXT_PUBLIC_APP_URL`, etc. — mirror `.env.example`).
+- Production: **omit** `USE_SQLITE` or set `USE_SQLITE=false`; use MySQL.
+- Run **`npx prisma migrate deploy`** when you use Prisma migrations against MySQL (or follow your team’s DB workflow).
+- **`npm run build`** then **`npm start`** (see [`package.json`](package.json) `start` script; Hostinger may set `PORT`).
+- Ensure **`public/uploads`** (or your `UPLOAD_DIR`) persists across deploys if you use local file storage.
+
 ## Deployment
 
-### Hostinger Cloud Server Deployment
+### Docker (optional)
 
-1. **Build the application**:
-```bash
-npm run build
-```
-
-2. **Environment setup on server**:
-- Set up PostgreSQL database
-- Configure environment variables
-- Set `NODE_ENV=production`
-- Configure SMTP settings
-
-3. **File storage**:
-- Ensure upload directory is writable
-- Configure S3-compatible storage for production if needed
-
-4. **Database**:
-```bash
-npm run db:deploy
-```
-
-5. **Start application**:
-```bash
-npm start
-```
-
-### Docker (Optional)
-
-A Dockerfile can be added for containerized deployment:
-
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-EXPOSE 3000
-CMD ["npm", "start"]
-```
+You can containerize with Node 20+; ensure `DATABASE_URL`, auth env, and upload volume are configured at runtime. A `Dockerfile` is not included in this repo by default.
 
 ## Development Phases
 
@@ -303,10 +263,9 @@ The architecture supports future browser extension integration:
 
 ## Source
 
-- **GitHub**: [Click-Track-Marketing-Feedback-Tool](https://github.com/anasshahzad101/Click-Track-Marketing-Feedback-Tool)
 - Made with [Cursor](https://cursor.com)
 
-_Deploy note:_ Vercel builds use Prisma Linux binary targets (`rhel-openssl-3.0.x`); Puppeteer was removed as unused (screenshots use Microlink).
+Prisma includes Linux engine targets (e.g. `rhel-openssl-3.0.x` in [prisma/schema.prisma](prisma/schema.prisma)) for hosting on common Linux runtimes.
 
 ## License
 

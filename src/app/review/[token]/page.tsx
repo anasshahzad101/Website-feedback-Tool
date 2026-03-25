@@ -39,6 +39,7 @@ export default async function GuestReviewRoute({ params }: GuestReviewRouteProps
               targetTimestampMs: true,
               color: true,
               commentThreadId: true,
+              screenshotContextPath: true,
             },
           },
           commentThreads: {

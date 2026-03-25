@@ -95,7 +95,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { reviewItemId, reviewRevisionId, rootAnnotationId, initialMessage } = validated.data;
+    const {
+      reviewItemId,
+      reviewRevisionId,
+      rootAnnotationId,
+      initialMessage,
+      attachments,
+    } = validated.data;
 
     // Check access
     const reviewItem = await db.reviewItem.findUnique({
@@ -141,7 +147,9 @@ export async function POST(request: NextRequest) {
       const message = await tx.commentMessage.create({
         data: {
           threadId: thread.id,
-          body: initialMessage,
+          body: initialMessage.trim(),
+          attachments:
+            attachments && attachments.length > 0 ? attachments : undefined,
           createdByUserId: session.user.id,
         },
       });
@@ -247,7 +255,11 @@ export async function PATCH(request: NextRequest) {
     }
 
     // Status change path
-    if (body.status !== undefined && !body.body) {
+    if (
+      body.status !== undefined &&
+      body.body === undefined &&
+      body.attachments === undefined
+    ) {
       const statusValidated = updateThreadStatusSchema.safeParse({ threadId, status: body.status });
       if (!statusValidated.success) {
         return NextResponse.json(
@@ -319,7 +331,11 @@ export async function PATCH(request: NextRequest) {
     await db.commentMessage.create({
       data: {
         threadId,
-        body: validated.data.body,
+        body: validated.data.body.trim(),
+        attachments:
+          validated.data.attachments && validated.data.attachments.length > 0
+            ? validated.data.attachments
+            : undefined,
         createdByUserId: session.user.id,
       },
     });

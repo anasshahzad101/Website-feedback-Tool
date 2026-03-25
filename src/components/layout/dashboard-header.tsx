@@ -13,6 +13,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/utils";
 import { LogOut, User, Settings } from "lucide-react";
 import Link from "next/link";
+import { publicBrandName } from "@/lib/brand";
 
 interface DashboardHeaderProps {
   user: {
@@ -32,11 +33,11 @@ export function DashboardHeader({ user }: DashboardHeaderProps) {
           <Link href="/dashboard" className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/90 text-primary-foreground shadow-sm ring-1 ring-white/10">
-                <span className="text-lg font-black leading-none">C</span>
+                <span className="text-lg font-black leading-none">W</span>
               </div>
               <div className="flex flex-col leading-tight">
                 <span className="text-sm font-semibold tracking-tight">
-                  Click Track Marketing
+                  {publicBrandName()}
                 </span>
                 <span className="text-[11px] uppercase tracking-[0.14em] text-slate-300">
                   FEEDBACK TOOL

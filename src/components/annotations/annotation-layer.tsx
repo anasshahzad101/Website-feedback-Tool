@@ -98,8 +98,9 @@ export function AnnotationLayer({
     };
 
     onAnnotationCreated(newAnnotation);
-    onAnnotationSelected(null);
-  }, [getSVGPoint, svgWidth, svgHeight, onAnnotationCreated, onAnnotationSelected]);
+    // Do not call onAnnotationSelected(null) here — the parent sets selection on the new pin;
+    // clearing it made the pin look unselected right after place (felt like a failed click).
+  }, [getSVGPoint, svgWidth, svgHeight, onAnnotationCreated]);
 
   const handlePinClick = useCallback((e: React.MouseEvent, annotationId: string) => {
     e.stopPropagation();

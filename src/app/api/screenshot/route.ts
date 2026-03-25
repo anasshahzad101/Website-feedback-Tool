@@ -4,7 +4,19 @@ import { db } from "@/lib/db/client";
 import path from "path";
 import fs from "fs/promises";
 
-// POST /api/screenshot - Capture a screenshot of a URL and store it
+async function saveScreenshotBuffer(
+  imgBuffer: Buffer,
+  filenamePrefix: string
+): Promise<string> {
+  const uploadsDir = path.join(process.cwd(), "public", "uploads", "screenshots");
+  await fs.mkdir(uploadsDir, { recursive: true });
+  const filename = `${filenamePrefix}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+  const filePath = path.join(uploadsDir, filename);
+  await fs.writeFile(filePath, imgBuffer);
+  return `/screenshots/${filename}`;
+}
+
+// POST /api/screenshot — full URL capture (Microlink), or client-provided PNG for annotation context
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
@@ -13,24 +25,64 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { url, reviewItemId, revisionId } = body;
+    const {
+      url,
+      reviewItemId,
+      revisionId,
+      imageBase64,
+      contextOnly,
+    } = body as {
+      url?: string;
+      reviewItemId?: string;
+      revisionId?: string;
+      imageBase64?: string;
+      contextOnly?: boolean;
+    };
 
-    if (!url) {
-      return NextResponse.json({ error: "URL is required" }, { status: 400 });
+    const skipAssetUpdate = contextOnly === true;
+
+    // Client-captured viewport / crop (PNG data URL or raw base64)
+    if (typeof imageBase64 === "string" && imageBase64.trim().length > 0) {
+      let payload = imageBase64.trim();
+      const dataUrlMatch = payload.match(/^data:image\/\w+;base64,(.+)$/i);
+      if (dataUrlMatch) payload = dataUrlMatch[1]!;
+
+      let buf: Buffer;
+      try {
+        buf = Buffer.from(payload, "base64");
+      } catch {
+        return NextResponse.json({ error: "Invalid base64 image" }, { status: 400 });
+      }
+      if (buf.length > 6 * 1024 * 1024) {
+        return NextResponse.json({ error: "Image too large" }, { status: 400 });
+      }
+
+      const relPath = await saveScreenshotBuffer(buf, "context");
+
+      // Never write client-provided PNGs onto the review item or revision.
+      // Those belong on annotations (screenshotContextPath) only. Updating the
+      // asset here could replace the main review screenshot. Microlink URL
+      // captures below still update assets when reviewItemId/revisionId are sent.
+      return NextResponse.json({ screenshotPath: relPath });
     }
 
-    // Validate URL
+    if (!url || typeof url !== "string") {
+      return NextResponse.json(
+        { error: "URL or imageBase64 is required" },
+        { status: 400 }
+      );
+    }
+
     try {
       new URL(url);
     } catch {
       return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
     }
 
-    // Use microlink.io free API — WITHOUT embed= so we get JSON back with the screenshot URL
     const microlinkUrl = `https://api.microlink.io?url=${encodeURIComponent(url)}&screenshot=true&meta=false&waitFor=2000`;
 
     const microlinkRes = await fetch(microlinkUrl, {
-      headers: { "User-Agent": "ClickTrack-Feedback-Tool/1.0" },
+      headers: { "User-Agent": "WebsiteFeedback-Tool/1.0" },
       signal: AbortSignal.timeout(35000),
     });
 
@@ -49,7 +101,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Download the screenshot image
     const imgRes = await fetch(screenshotUrl, {
       signal: AbortSignal.timeout(20000),
     });
@@ -62,7 +113,6 @@ export async function POST(request: NextRequest) {
     const contentType = imgRes.headers.get("content-type") || "image/png";
     const ext = contentType.includes("jpeg") ? "jpg" : "png";
 
-    // Save to public/uploads/screenshots so Next.js serves files at /uploads/screenshots/...
     const uploadsDir = path.join(process.cwd(), "public", "uploads", "screenshots");
     await fs.mkdir(uploadsDir, { recursive: true });
 
@@ -72,15 +122,14 @@ export async function POST(request: NextRequest) {
 
     const relPath = `/screenshots/${filename}`;
 
-    // Update the review item and/or revision with the screenshot path
-    if (reviewItemId) {
+    if (!skipAssetUpdate && reviewItemId) {
       await db.reviewItem.update({
         where: { id: reviewItemId },
         data: { uploadedFilePath: relPath, thumbnailPath: relPath },
       });
     }
 
-    if (revisionId) {
+    if (!skipAssetUpdate && revisionId) {
       await db.reviewRevision.update({
         where: { id: revisionId },
         data: { snapshotPath: relPath },

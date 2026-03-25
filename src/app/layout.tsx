@@ -3,12 +3,13 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
+import { publicAppName, publicBrandName } from "@/lib/brand";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "Click Track Marketing — Feedback Tool",
-  description: "Internal review and client feedback platform for Click Track Marketing",
+  title: publicAppName(),
+  description: `Review and collect website feedback with ${publicBrandName()}.`,
 };
 
 export default function RootLayout({

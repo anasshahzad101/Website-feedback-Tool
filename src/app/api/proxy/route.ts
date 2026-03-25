@@ -99,6 +99,12 @@ export async function GET(req: NextRequest) {
     if (isHtml) {
       let html = await response.text();
 
+      // Drop meta CSP / frame policies that still block rendering inside our iframe
+      html = html.replace(
+        /<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi,
+        ""
+      );
+
       // Inject <base> tag so relative URLs resolve against the proxied origin
       const baseTag = `<base href="${targetUrl.origin}${targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf("/") + 1)}" target="_self">`;
 

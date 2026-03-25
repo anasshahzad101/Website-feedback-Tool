@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Globe, Image, FileText, Video, ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { publicBrandName } from "@/lib/brand";
 
 interface GuestReviewPageProps {
   shareLink: ShareLink;
@@ -32,6 +33,7 @@ interface GuestReviewPageProps {
       targetTimestampMs?: number | null;
       color: string;
       commentThreadId: string | null;
+      screenshotContextPath?: string | null;
       commentThread?: { id: string; status: CommentStatus } | null;
     }>;
     commentThreads: Array<{
@@ -92,7 +94,7 @@ export function GuestReviewPage({
                   <span className="text-primary-foreground font-bold">S</span>
                 </div>
                 <span className="font-semibold hidden sm:inline">
-                  {process.env.NEXT_PUBLIC_BRAND_NAME || "Click Track Marketing"}
+                  {publicBrandName()}
                 </span>
               </div>
               <span className="text-muted-foreground">|</span>
@@ -151,7 +153,7 @@ export function GuestReviewPage({
                 <span className="text-primary-foreground font-bold">S</span>
               </div>
               <span className="font-semibold">
-                {process.env.NEXT_PUBLIC_BRAND_NAME || "Click Track Marketing"}
+                {publicBrandName()}
               </span>
             </div>
           </div>

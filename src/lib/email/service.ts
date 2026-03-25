@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { db, NotificationType, NotificationStatus } from "@/lib/db/client";
+import { publicAppName, publicBrandName } from "@/lib/brand";
 
 interface EmailConfig {
   host: string;
@@ -33,7 +34,9 @@ class EmailService {
       port: parseInt(process.env.SMTP_PORT || "587"),
       user: process.env.SMTP_USER || "",
       password: process.env.SMTP_PASSWORD || "",
-      from: process.env.SMTP_FROM || "Click Track Marketing <noreply@clicktrackmarketing.com>",
+      from:
+        process.env.SMTP_FROM ||
+        `${publicBrandName()} <noreply@example.com>`,
     };
 
     this.from = config.from;
@@ -175,7 +178,7 @@ class EmailService {
 
       case NotificationType.ACCOUNT_SETUP:
         return {
-          subject: "Your Click Track Marketing account",
+          subject: `Your ${publicBrandName()} account`,
           html: this.renderAccountSetupEmail(data, appUrl),
         };
 
@@ -185,13 +188,15 @@ class EmailService {
   }
 
   private renderBaseEmail(content: string): string {
+    const brand = publicBrandName();
+    const app = publicAppName();
     return `
       <!DOCTYPE html>
       <html>
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Click Track Marketing - Feedback Tool</title>
+          <title>${brand}</title>
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
@@ -204,14 +209,13 @@ class EmailService {
         <body>
           <div class="container">
             <div class="header">
-              <h1>Click Track Marketing</h1>
-              <p>Feedback Tool</p>
+              <h1>${brand}</h1>
             </div>
             <div class="content">
               ${content}
             </div>
             <div class="footer">
-              <p>This is an automated message from Click Track Marketing Feedback Tool.</p>
+              <p>This is an automated message from ${app}.</p>
             </div>
           </div>
         </body>
@@ -286,7 +290,7 @@ class EmailService {
   private renderPasswordResetEmail(data: Record<string, unknown>, appUrl: string): string {
     return this.renderBaseEmail(`
       <h2>Password Reset</h2>
-      <p>You requested a password reset for your Click Track Marketing Feedback Tool account.</p>
+      <p>You requested a password reset for your ${publicAppName()} account.</p>
       <p>Click the button below to reset your password. This link expires in 1 hour.</p>
       <a href="${appUrl}/reset-password?token=${data.token}" class="button">Reset Password</a>
       <p style="margin-top: 20px; font-size: 14px; color: #64748b;">
@@ -298,7 +302,7 @@ class EmailService {
   private renderAccountSetupEmail(data: Record<string, unknown>, appUrl: string): string {
     return this.renderBaseEmail(`
       <h2>Your Account is Ready</h2>
-      <p>An account has been created for you on Click Track Marketing Feedback Tool.</p>
+      <p>An account has been created for you on ${publicAppName()}.</p>
       <p><strong>Email:</strong> ${data.email}</p>
       <p>Click the button below to set your password and get started.</p>
       <a href="${appUrl}/reset-password?token=${data.token}" class="button">Set Password</a>

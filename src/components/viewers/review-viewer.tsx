@@ -1,12 +1,22 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { CommentThreadDetailDialog } from "@/components/comments/comment-thread-detail-dialog";
+import { ContextScreenshotWithPin } from "@/components/comments/context-screenshot-with-pin";
+import { uploadCommentFiles, messageHasAttachments } from "@/lib/comment-attachments";
 import { CommentStatus, ProjectRole, ReviewItemType, ReviewMode } from "@prisma/client";
 import { AnnotationLayer, type NewAnnotation, type Annotation } from "@/components/annotations/annotation-layer";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { cn, getInitials } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   Camera,
@@ -22,7 +32,17 @@ import {
   ZoomOut,
   MousePointer,
   Hand,
+  Paperclip,
+  Mic,
+  Square,
+  Search,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
+import {
+  captureIframeViewport,
+  captureImageAroundPin,
+} from "@/lib/capture-annotation-context";
 
 export type { Annotation };
 
@@ -37,6 +57,7 @@ export interface CommentThread {
     createdByUser?: { firstName: string; lastName: string } | null;
     createdByGuest?: { name: string } | null;
     isSystemMessage: boolean;
+    attachments?: unknown;
   }>;
   assignedTo?: { id: string; firstName: string; lastName: string } | null;
 }
@@ -76,6 +97,20 @@ interface ReviewViewerProps {
   userRole: ProjectRole | null;
 }
 
+/** Pin-centered client crops are stored as `/screenshots/context-*`; full-page Microlink shots use `screenshot-*`. */
+function contextPinMarkerPercents(
+  screenshotContextPath: string | null | undefined,
+  xPercent: number | undefined,
+  yPercent: number | undefined
+): { left: number; top: number } {
+  const path = (screenshotContextPath ?? "").trim();
+  const isPinCenteredCrop = /\/screenshots\/context-/i.test(path);
+  if (isPinCenteredCrop) return { left: 50, top: 50 };
+  const x = (xPercent ?? 0.5) * 100;
+  const y = (yPercent ?? 0.5) * 100;
+  return { left: x, top: y };
+}
+
 const statusConfig: Record<CommentStatus, { label: string; icon: typeof CheckCircle2 }> = {
   OPEN: { label: "Open", icon: MessageSquare },
   IN_PROGRESS: { label: "In Progress", icon: Clock },
@@ -84,6 +119,49 @@ const statusConfig: Record<CommentStatus, { label: string; icon: typeof CheckCir
   IGNORED: { label: "Ignored", icon: X },
 };
 
+const COMPLETED_THREAD_STATUSES: CommentStatus[] = [
+  CommentStatus.RESOLVED,
+  CommentStatus.CLOSED,
+];
+
+const statusDotClass: Record<CommentStatus, string> = {
+  OPEN: "bg-sky-500",
+  IN_PROGRESS: "bg-amber-500",
+  RESOLVED: "bg-emerald-500",
+  CLOSED: "bg-slate-400",
+  IGNORED: "bg-slate-300",
+};
+
+function threadMatchesCommentSearch(thread: CommentThread, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  for (const m of thread.messages) {
+    if (m.isSystemMessage) continue;
+    if (m.body.toLowerCase().includes(q)) return true;
+    const u = m.createdByUser;
+    if (u && `${u.firstName} ${u.lastName}`.toLowerCase().includes(q)) return true;
+    if (m.createdByGuest?.name?.toLowerCase().includes(q)) return true;
+  }
+  return false;
+}
+
+function authorInitialsFromFirstMessage(
+  m: CommentThread["messages"][number] | undefined
+): string {
+  if (!m || m.isSystemMessage) return "?";
+  if (m.createdByUser) {
+    return getInitials(
+      m.createdByUser.firstName || "?",
+      m.createdByUser.lastName || ""
+    );
+  }
+  const gn = m.createdByGuest?.name?.trim();
+  if (!gn) return "G";
+  const parts = gn.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return getInitials(parts[0]!, parts[1]!);
+  return parts[0]!.slice(0, 2).toUpperCase();
+}
+
 export function ReviewViewer({
   reviewItem,
   annotations: initialAnnotations,
@@ -91,6 +169,7 @@ export function ReviewViewer({
   currentRevision,
   selectedRevisionId,
   revisions,
+  user,
 }: ReviewViewerProps) {
   const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations);
   const [threads, setThreads] = useState<CommentThread[]>(initialThreads);
@@ -99,8 +178,31 @@ export function ReviewViewer({
   const [newComment, setNewComment] = useState("");
   const [savingAnnotation, setSavingAnnotation] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
-  const [replyingToThreadId, setReplyingToThreadId] = useState<string | null>(null);
+  const [detailThreadId, setDetailThreadId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
+  type StagedAttachment = {
+    id: string;
+    file: File;
+    previewUrl?: string;
+  };
+  const [composeStaged, setComposeStaged] = useState<StagedAttachment[]>([]);
+  const [replyStaged, setReplyStaged] = useState<StagedAttachment[]>([]);
+  const [contextLightbox, setContextLightbox] = useState<{
+    src: string;
+    pinNumber: number;
+    pinColor: string;
+    markerLeftPercent?: number;
+    markerTopPercent?: number;
+  } | null>(null);
+  const [recordingFor, setRecordingFor] = useState<"compose" | "reply" | null>(
+    null
+  );
+  const composeFileInputRef = useRef<HTMLInputElement>(null);
+  const replyFileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<BlobPart[]>([]);
+  const stagedForCleanupRef = useRef<StagedAttachment[]>([]);
   // Zoom controls are currently disabled for website feedback to avoid layout issues.
   // Keep internal zoom at 1 so content always renders at natural size.
   const [zoom] = useState(1);
@@ -113,9 +215,18 @@ export function ReviewViewer({
   // "browse"   = iframe is interactive (can scroll/click the live site)
   const [interactionMode, setInteractionMode] = useState<"annotate" | "browse">("annotate");
   // For website review items, track whether the user is in live or screenshot mode.
-  const [websiteViewMode, setWebsiteViewMode] = useState<"live" | "screenshot">("live");
+  const [websiteViewMode, setWebsiteViewMode] = useState<"live" | "screenshot">(() => {
+    if (reviewItem.type !== "WEBSITE") return "live";
+    return reviewItem.reviewMode === ReviewMode.SCREENSHOT_CAPTURE ? "screenshot" : "live";
+  });
   // Pending pin (not saved until comment is submitted); cleared on cancel or when placing another pin.
   const [pendingAnnotation, setPendingAnnotation] = useState<NewAnnotation | null>(null);
+  /** Markup-style sidebar: filter + search */
+  const [commentSidebarFilter, setCommentSidebarFilter] = useState<
+    "all" | "open" | "resolved"
+  >("all");
+  const [commentSearchQuery, setCommentSearchQuery] = useState("");
+  const [resolvedCommentsExpanded, setResolvedCommentsExpanded] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const displayRevision = selectedRevisionId
@@ -123,8 +234,12 @@ export function ReviewViewer({
     : currentRevision;
 
   const effectiveSourceUrl = displayRevision?.sourceUrl || reviewItem.sourceUrl;
+  // Only apply local "Capture" override in website screenshot mode — never let
+  // that path replace the main asset for IMAGE/PDF/VIDEO reviews.
   const effectiveFilePath =
-    capturedPath ||
+    (reviewItem.type === "WEBSITE" && websiteViewMode === "screenshot"
+      ? capturedPath
+      : null) ||
     displayRevision?.snapshotPath ||
     displayRevision?.uploadedFilePath ||
     reviewItem.uploadedFilePath;
@@ -154,12 +269,193 @@ export function ReviewViewer({
     return () => obs.disconnect();
   }, [zoom, displayRevision]);
 
-  const handleCommentClick = useCallback((thread: CommentThread) => {
-    if (thread.rootAnnotationId) {
-      setSelectedAnnotationId(thread.rootAnnotationId);
-      setPendingAnnotationId(null);
-    }
+  const canUploadAttachments = user.role !== "GUEST";
+
+  const clearComposeStaged = useCallback(() => {
+    setComposeStaged((prev) => {
+      prev.forEach((s) => {
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+      });
+      return [];
+    });
   }, []);
+
+  const clearReplyStaged = useCallback(() => {
+    setReplyStaged((prev) => {
+      prev.forEach((s) => {
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+      });
+      return [];
+    });
+  }, []);
+
+  const addComposeFiles = useCallback((list: FileList | File[]) => {
+    const arr = Array.from(list);
+    setComposeStaged((prev) => {
+      const room = Math.max(0, 8 - prev.length);
+      const take = arr.slice(0, room);
+      if (take.length === 0) return prev;
+      return [
+        ...prev,
+        ...take.map((file) => ({
+          id: crypto.randomUUID(),
+          file,
+          previewUrl: file.type.startsWith("image/")
+            ? URL.createObjectURL(file)
+            : undefined,
+        })),
+      ];
+    });
+  }, []);
+
+  const addReplyFiles = useCallback((list: FileList | File[]) => {
+    const arr = Array.from(list);
+    setReplyStaged((prev) => {
+      const room = Math.max(0, 8 - prev.length);
+      const take = arr.slice(0, room);
+      if (take.length === 0) return prev;
+      return [
+        ...prev,
+        ...take.map((file) => ({
+          id: crypto.randomUUID(),
+          file,
+          previewUrl: file.type.startsWith("image/")
+            ? URL.createObjectURL(file)
+            : undefined,
+        })),
+      ];
+    });
+  }, []);
+
+  const removeComposeStaged = useCallback((id: string) => {
+    setComposeStaged((prev) => {
+      const cur = prev.find((s) => s.id === id);
+      if (cur?.previewUrl) URL.revokeObjectURL(cur.previewUrl);
+      return prev.filter((s) => s.id !== id);
+    });
+  }, []);
+
+  const removeReplyStaged = useCallback((id: string) => {
+    setReplyStaged((prev) => {
+      const cur = prev.find((s) => s.id === id);
+      if (cur?.previewUrl) URL.revokeObjectURL(cur.previewUrl);
+      return prev.filter((s) => s.id !== id);
+    });
+  }, []);
+
+  const stopVoiceRecording = useCallback(() => {
+    mediaRecorderRef.current?.stop();
+  }, []);
+
+  const startVoiceRecording = useCallback(
+    async (target: "compose" | "reply") => {
+      if (!canUploadAttachments) return;
+      if (!navigator.mediaDevices?.getUserMedia) {
+        toast.error("Recording is not supported in this browser");
+        return;
+      }
+      if (mediaRecorderRef.current?.state === "recording") {
+        toast.error("Stop the current recording first");
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        mediaStreamRef.current = stream;
+        const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : MediaRecorder.isTypeSupported("audio/webm")
+            ? "audio/webm"
+            : "";
+        const rec = mime
+          ? new MediaRecorder(stream, { mimeType: mime })
+          : new MediaRecorder(stream);
+        voiceChunksRef.current = [];
+        rec.ondataavailable = (e) => {
+          if (e.data.size > 0) voiceChunksRef.current.push(e.data);
+        };
+        rec.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+          mediaRecorderRef.current = null;
+          const blob = new Blob(voiceChunksRef.current, {
+            type: rec.mimeType || "audio/webm",
+          });
+          voiceChunksRef.current = [];
+          if (blob.size > 200) {
+            const ext = blob.type.includes("webm") ? "webm" : "ogg";
+            const file = new File(
+              [blob],
+              `voice-${Date.now()}.${ext}`,
+              { type: blob.type || "audio/webm" }
+            );
+            if (target === "compose") {
+              setComposeStaged((prev) => {
+                if (prev.length >= 8) return prev;
+                return [...prev, { id: crypto.randomUUID(), file }];
+              });
+            } else {
+              setReplyStaged((prev) => {
+                if (prev.length >= 8) return prev;
+                return [...prev, { id: crypto.randomUUID(), file }];
+              });
+            }
+          }
+          setRecordingFor(null);
+        };
+        rec.start();
+        mediaRecorderRef.current = rec;
+        setRecordingFor(target);
+      } catch {
+        toast.error("Could not access microphone");
+      }
+    },
+    [canUploadAttachments]
+  );
+
+  useEffect(() => {
+    stagedForCleanupRef.current = [...composeStaged, ...replyStaged];
+  }, [composeStaged, replyStaged]);
+
+  useEffect(() => {
+    return () => {
+      mediaRecorderRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      stagedForCleanupRef.current.forEach((s) => {
+        if (s.previewUrl) URL.revokeObjectURL(s.previewUrl);
+      });
+    };
+  }, []);
+
+  const handleCommentClick = useCallback(
+    (thread: CommentThread) => {
+      setDetailThreadId(thread.id);
+      if (thread.rootAnnotationId) {
+        setSelectedAnnotationId(thread.rootAnnotationId);
+        setPendingAnnotationId(null);
+      }
+      if (user.role === "GUEST") return;
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/comments?reviewItemId=${encodeURIComponent(reviewItem.id)}`
+          );
+          if (!res.ok) return;
+          const data = (await res.json()) as { threads?: CommentThread[] };
+          const fresh = data.threads?.find((t) => t.id === thread.id);
+          if (fresh) {
+            setThreads((prev) =>
+              prev.map((t) => (t.id === fresh.id ? fresh : t))
+            );
+          }
+        } catch {
+          /* keep existing client state */
+        }
+      })();
+    },
+    [reviewItem.id, user.role]
+  );
 
   const handleAnnotationCreated = useCallback((annotation: NewAnnotation) => {
     // Show pin only in UI; it is saved when the user submits a comment. Replacing any previous pending pin.
@@ -181,7 +477,7 @@ export function ReviewViewer({
   );
 
   const handleSubmitComment = useCallback(async () => {
-    if (!newComment.trim()) return;
+    if (!newComment.trim() && composeStaged.length === 0) return;
     if (!pendingAnnotation && !pendingAnnotationId) return;
     setSubmittingComment(true);
     if (pendingAnnotation) setSavingAnnotation(true);
@@ -191,27 +487,105 @@ export function ReviewViewer({
       if (pendingAnnotation) {
         let screenshotContextPath: string | undefined;
 
-        // For website live annotations, capture a screenshot for context.
+        // Website: save what the user actually saw (viewport or crop around pin), not a remote "top of page" grab.
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
           try {
-            const shotRes = await fetch("/api/screenshot", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                url: effectiveSourceUrl,
-                reviewItemId: reviewItem.id,
-                revisionId: displayRevision?.id,
-              }),
-            });
-            if (shotRes.ok) {
-              const data = await shotRes.json();
-              screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
+            let dataUrl: string | null = null;
+            const root = contentRef.current;
+
+            if (websiteViewMode === "live") {
+              const iframe = root?.querySelector("iframe");
+              if (iframe) {
+                dataUrl = await captureIframeViewport(iframe, {
+                  x: pendingAnnotation.x,
+                  y: pendingAnnotation.y,
+                });
+              }
             } else {
-              const d = await shotRes.json().catch(() => ({}));
-              console.error("Screenshot capture failed:", d);
+              const img = root?.querySelector(
+                'img[alt="Website screenshot"]'
+              ) as HTMLImageElement | null;
+              if (img) {
+                if (!img.complete) {
+                  await new Promise<void>((resolve) => {
+                    img.onload = () => resolve();
+                    img.onerror = () => resolve();
+                  });
+                }
+                dataUrl = captureImageAroundPin(
+                  img,
+                  pendingAnnotation.xPercent,
+                  pendingAnnotation.yPercent
+                );
+              }
+            }
+
+            if (dataUrl != null) {
+              const shotRes = await fetch("/api/screenshot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ imageBase64: dataUrl, contextOnly: true }),
+              });
+              if (shotRes.ok) {
+                const data = await shotRes.json();
+                screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
+              } else {
+                const d = await shotRes.json().catch(() => ({}));
+                console.error("Screenshot context save failed:", d);
+              }
+            } else if (websiteViewMode !== "live") {
+              // Screenshot mode: optional remote fallback if image crop failed
+              const shotRes = await fetch("/api/screenshot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: effectiveSourceUrl, contextOnly: true }),
+              });
+              if (shotRes.ok) {
+                const data = await shotRes.json();
+                screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
+              }
+            }
+            // Live mode: never use Microlink for context — it is always the top of the page.
+          } catch (err) {
+            console.error("Screenshot context error:", err);
+          }
+        } else if (reviewItem.type === "IMAGE" && effectiveFilePath) {
+          // Static image reviews: capture was only implemented for websites before.
+          try {
+            const root = contentRef.current;
+            const img = root?.querySelector(
+              'img[alt="Review image"]'
+            ) as HTMLImageElement | null;
+            if (img) {
+              if (!img.complete) {
+                await new Promise<void>((resolve) => {
+                  img.onload = () => resolve();
+                  img.onerror = () => resolve();
+                });
+              }
+              const dataUrl = captureImageAroundPin(
+                img,
+                pendingAnnotation.xPercent,
+                pendingAnnotation.yPercent
+              );
+              if (dataUrl != null) {
+                const shotRes = await fetch("/api/screenshot", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ imageBase64: dataUrl, contextOnly: true }),
+                });
+                if (shotRes.ok) {
+                  const data = await shotRes.json();
+                  screenshotContextPath = (data as { screenshotPath?: string })
+                    .screenshotPath;
+                } else {
+                  const d = await shotRes.json().catch(() => ({}));
+                  console.error("Image context save failed:", d);
+                }
+              }
             }
           } catch (err) {
-            console.error("Screenshot capture error:", err);
+            console.error("Image context capture error:", err);
           }
         }
 
@@ -240,6 +614,11 @@ export function ReviewViewer({
         setPendingAnnotation(null);
       }
 
+      let uploaded: Awaited<ReturnType<typeof uploadCommentFiles>> = [];
+      if (composeStaged.length > 0 && canUploadAttachments) {
+        uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
+      }
+
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -248,14 +627,30 @@ export function ReviewViewer({
           reviewRevisionId: displayRevision?.id,
           rootAnnotationId: annotationId,
           initialMessage: newComment.trim(),
+          ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
         }),
       });
 
+      const commentPayload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.error || "Failed to submit comment");
+        const d = commentPayload as {
+          error?: string;
+          details?: { fieldErrors?: Record<string, string[] | undefined> };
+        };
+        let msg = d.error || "Failed to submit comment";
+        const fe = d.details?.fieldErrors;
+        if (fe) {
+          for (const vals of Object.values(fe)) {
+            const first = Array.isArray(vals) ? vals[0] : undefined;
+            if (first) {
+              msg = `${msg}: ${first}`;
+              break;
+            }
+          }
+        }
+        throw new Error(msg);
       }
-      const { thread } = await res.json();
+      const { thread } = commentPayload as { thread: CommentThread };
       setThreads((prev) => [thread, ...prev]);
       setAnnotations((prev) =>
         prev.map((a) =>
@@ -270,6 +665,7 @@ export function ReviewViewer({
       );
       setPendingAnnotationId(null);
       setNewComment("");
+      clearComposeStaged();
       setSelectedAnnotationId(null);
       toast.success("Comment posted");
     } catch (err) {
@@ -278,38 +674,81 @@ export function ReviewViewer({
       setSubmittingComment(false);
       setSavingAnnotation(false);
     }
-  }, [newComment, pendingAnnotation, pendingAnnotationId, reviewItem.id, displayRevision]);
+  }, [
+    newComment,
+    composeStaged,
+    canUploadAttachments,
+    clearComposeStaged,
+    pendingAnnotation,
+    pendingAnnotationId,
+    reviewItem.id,
+    reviewItem.type,
+    displayRevision,
+    effectiveSourceUrl,
+    effectiveFilePath,
+    websiteViewMode,
+  ]);
 
   const handleCancelPending = useCallback(() => {
+    mediaRecorderRef.current?.stop();
     // Pin was not saved yet; just remove it from UI. No API call.
     setPendingAnnotation(null);
     setPendingAnnotationId(null);
     setSelectedAnnotationId(null);
     setNewComment("");
-  }, []);
+    clearComposeStaged();
+  }, [clearComposeStaged]);
 
   const handleReply = useCallback(
     async (threadId: string) => {
-      if (!replyText.trim()) return;
+      if (!replyText.trim() && replyStaged.length === 0) return;
       setSubmittingComment(true);
       try {
+        let uploaded: Awaited<ReturnType<typeof uploadCommentFiles>> = [];
+        if (replyStaged.length > 0 && canUploadAttachments) {
+          uploaded = await uploadCommentFiles(replyStaged.map((s) => s.file));
+        }
         const res = await fetch("/api/comments", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ threadId, body: replyText.trim() }),
+          body: JSON.stringify({
+            threadId,
+            body: replyText.trim(),
+            ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
+          }),
         });
-        if (!res.ok) throw new Error("Failed to submit reply");
-        const { thread } = await res.json();
+        const replyPayload = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const d = replyPayload as {
+            error?: string;
+            details?: { fieldErrors?: Record<string, string[] | undefined> };
+          };
+          let msg = d.error || "Failed to submit reply";
+          const fe = d.details?.fieldErrors;
+          if (fe) {
+            for (const vals of Object.values(fe)) {
+              const first = Array.isArray(vals) ? vals[0] : undefined;
+              if (first) {
+                msg = `${msg}: ${first}`;
+                break;
+              }
+            }
+          }
+          throw new Error(msg);
+        }
+        const { thread } = replyPayload as { thread: CommentThread };
         setThreads((prev) => prev.map((t) => (t.id === threadId ? thread : t)));
         setReplyText("");
-        setReplyingToThreadId(null);
-      } catch {
-        toast.error("Failed to submit reply");
+        clearReplyStaged();
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to submit reply"
+        );
       } finally {
         setSubmittingComment(false);
       }
     },
-    [replyText]
+    [replyText, replyStaged, canUploadAttachments, clearReplyStaged]
   );
 
   const handleStatusChange = useCallback(
@@ -410,11 +849,232 @@ export function ReviewViewer({
     : baseAnnotationsForCanvas;
   const pendingAnnotationForForm = pendingAnnotation ?? annotations.find((a) => a.id === pendingAnnotationId);
 
+  const { activeThreads, completedThreads } = useMemo(() => {
+    const active = threads.filter(
+      (t) => !COMPLETED_THREAD_STATUSES.includes(t.status)
+    );
+    const done = threads.filter((t) =>
+      COMPLETED_THREAD_STATUSES.includes(t.status)
+    );
+    return { activeThreads: active, completedThreads: done };
+  }, [threads]);
+
+  useEffect(() => {
+    if (activeThreads.length === 0 && completedThreads.length > 0) {
+      setResolvedCommentsExpanded(true);
+    }
+  }, [activeThreads.length, completedThreads.length]);
+
+  const filteredOpenThreads = useMemo(() => {
+    if (!commentSearchQuery.trim()) return activeThreads;
+    return activeThreads.filter((t) =>
+      threadMatchesCommentSearch(t, commentSearchQuery)
+    );
+  }, [activeThreads, commentSearchQuery]);
+
+  const filteredCompletedThreads = useMemo(() => {
+    if (!commentSearchQuery.trim()) return completedThreads;
+    return completedThreads.filter((t) =>
+      threadMatchesCommentSearch(t, commentSearchQuery)
+    );
+  }, [completedThreads, commentSearchQuery]);
+
+  const detailThread = useMemo(
+    () =>
+      detailThreadId
+        ? (threads.find((t) => t.id === detailThreadId) ?? null)
+        : null,
+    [threads, detailThreadId]
+  );
+
+  useEffect(() => {
+    if (detailThreadId && !threads.some((t) => t.id === detailThreadId)) {
+      setDetailThreadId(null);
+    }
+  }, [threads, detailThreadId]);
+
+  const handleDetailOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        setDetailThreadId(null);
+        mediaRecorderRef.current?.stop();
+        clearReplyStaged();
+        setReplyText("");
+      }
+    },
+    [clearReplyStaged]
+  );
+
+  const renderThreadCard = useCallback(
+    (thread: CommentThread) => {
+      const annotation = annotations.find(
+        (a) =>
+          a.commentThreadId === thread.id || a.id === thread.rootAnnotationId
+      );
+      const pinNumber = annotation
+        ? annotations.indexOf(annotation) + 1
+        : threads.findIndex((x) => x.id === thread.id) + 1;
+      const isSelected = annotation?.id === selectedAnnotationId;
+      const firstMessage = thread.messages.filter((m) => !m.isSystemMessage)[0];
+      const author = firstMessage?.createdByUser
+        ? `${firstMessage.createdByUser.firstName} ${firstMessage.createdByUser.lastName}`
+        : firstMessage?.createdByGuest?.name ?? "Unknown";
+      const attachmentMsgCount = thread.messages.reduce(
+        (n, m) => n + (messageHasAttachments(m.attachments) ? 1 : 0),
+        0
+      );
+      const nonSystem = thread.messages.filter((m) => !m.isSystemMessage);
+      const replyCount = Math.max(0, nonSystem.length - 1);
+
+      const initials = authorInitialsFromFirstMessage(firstMessage);
+
+      return (
+        <div
+          key={thread.id}
+          className={cn(
+            "rounded-xl border p-3 cursor-pointer transition-all duration-150",
+            isSelected
+              ? "border-primary/50 bg-primary/[0.06] shadow-md ring-1 ring-primary/20"
+              : "border-border/70 bg-card shadow-sm hover:shadow-md hover:border-border"
+          )}
+          onClick={() => handleCommentClick(thread)}
+        >
+          <div className="flex items-start gap-2.5">
+            <span
+              className="w-7 h-7 rounded-full text-white text-xs flex items-center justify-center font-bold shrink-0 shadow-sm"
+              style={{
+                backgroundColor: annotation?.color || "#3b82f6",
+              }}
+            >
+              {pinNumber}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-1.5">
+                <Avatar className="h-7 w-7 shrink-0 border border-border/50">
+                  <AvatarFallback className="text-[10px] font-semibold bg-muted">
+                    {initials}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0 flex items-center justify-between gap-1">
+                  <span className="text-xs font-semibold text-foreground truncate">
+                    {author}
+                  </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full shrink-0",
+                        statusDotClass[thread.status]
+                      )}
+                      title={statusConfig[thread.status].label}
+                    />
+                    <select
+                      value={thread.status}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        handleStatusChange(
+                          thread.id,
+                          e.target.value as CommentStatus
+                        );
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-[11px] border-0 bg-transparent p-0 pr-3 cursor-pointer focus:outline-none text-muted-foreground max-w-[100px]"
+                    >
+                      {(Object.keys(statusConfig) as CommentStatus[]).map((s) => (
+                        <option key={s} value={s}>
+                          {statusConfig[s].label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="h-6 w-6 flex items-center justify-center text-muted-foreground hover:text-destructive rounded-md hover:bg-muted/80"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteThread(thread.id);
+                      }}
+                      aria-label="Delete comment"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {firstMessage?.body.trim() ? (
+                <p className="text-[13px] text-foreground/90 leading-snug line-clamp-3 pl-9">
+                  {firstMessage.body}
+                </p>
+              ) : attachmentMsgCount > 0 ? (
+                <p className="text-[13px] text-muted-foreground italic pl-9">
+                  Attachments only
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2 mt-2 pl-9">
+                {attachmentMsgCount > 0 && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground bg-muted/70 rounded-md px-2 py-0.5">
+                    <Paperclip className="h-3 w-3" />
+                    {attachmentMsgCount} file
+                    {attachmentMsgCount === 1 ? "" : "s"}
+                  </span>
+                )}
+                {replyCount > 0 && (
+                  <span className="text-[10px] text-muted-foreground">
+                    {replyCount} repl{replyCount === 1 ? "y" : "ies"}
+                  </span>
+                )}
+                <span className="text-[10px] font-medium text-primary ml-auto">
+                  View thread
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    },
+    [
+      annotations,
+      threads,
+      selectedAnnotationId,
+      handleCommentClick,
+      handleStatusChange,
+      handleDeleteThread,
+    ]
+  );
+
+  const detailAnnotation = detailThread
+    ? annotations.find(
+        (a) =>
+          a.commentThreadId === detailThread.id ||
+          a.id === detailThread.rootAnnotationId
+      )
+    : undefined;
+
+  const detailContextMarkers = useMemo(() => {
+    if (!detailAnnotation) return { left: 50, top: 50 };
+    return contextPinMarkerPercents(
+      detailAnnotation.screenshotContextPath,
+      detailAnnotation.xPercent,
+      detailAnnotation.yPercent
+    );
+  }, [
+    detailAnnotation?.screenshotContextPath,
+    detailAnnotation?.xPercent,
+    detailAnnotation?.yPercent,
+  ]);
+
+  const detailPinNumber = detailAnnotation
+    ? annotations.indexOf(detailAnnotation) + 1
+    : detailThread
+      ? threads.findIndex((x) => x.id === detailThread.id) + 1
+      : 0;
+
   // In "browse" mode on an iframe, disable the annotation layer so the site is clickable.
   // Allow pin placement in both live and screenshot mode for websites.
   const annotationLayerActive = interactionMode === "annotate";
 
   return (
+    <>
     <div className="flex h-full overflow-hidden">
       {/* Main content area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -552,8 +1212,8 @@ export function ReviewViewer({
         </div>
       </div>
 
-      {/* Comment sidebar */}
-      <div className="w-80 border-l bg-card flex flex-col shrink-0">
+      {/* Comment sidebar — Markup.io-style: filters, search, open / resolved */}
+      <div className="w-[min(100vw,22rem)] sm:w-96 border-l bg-muted/20 flex flex-col shrink-0">
         {/* Pending comment input — show when user has placed a pin but not yet submitted a comment */}
         {pendingAnnotationId && pendingAnnotationForForm && (
           <div className="border-b p-4 bg-blue-50/50">
@@ -576,7 +1236,7 @@ export function ReviewViewer({
             <Textarea
               value={newComment}
               onChange={(e) => setNewComment(e.target.value)}
-              placeholder="What's your feedback here?"
+              placeholder="What's your feedback here? (Text optional if you add files or a voice note.)"
               className="text-sm min-h-[80px] resize-none"
               autoFocus
               onKeyDown={(e) => {
@@ -584,12 +1244,95 @@ export function ReviewViewer({
                   handleSubmitComment();
               }}
             />
+            {canUploadAttachments && (
+              <>
+                <input
+                  ref={composeFileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  accept="image/*,audio/*,.pdf,.txt,.zip,.doc,.docx,.xls,.xlsx"
+                  onChange={(e) => {
+                    const list = e.target.files;
+                    if (list?.length) addComposeFiles(list);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex flex-wrap items-center gap-1 mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() => composeFileInputRef.current?.click()}
+                    disabled={composeStaged.length >= 8 || submittingComment}
+                  >
+                    <Paperclip className="h-3.5 w-3.5 mr-1" />
+                    Files
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={recordingFor === "compose" ? "destructive" : "outline"}
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={() =>
+                      recordingFor === "compose"
+                        ? stopVoiceRecording()
+                        : startVoiceRecording("compose")
+                    }
+                    disabled={composeStaged.length >= 8 || submittingComment}
+                  >
+                    {recordingFor === "compose" ? (
+                      <>
+                        <Square className="h-3 w-3 mr-1 fill-current" />
+                        Stop
+                      </>
+                    ) : (
+                      <>
+                        <Mic className="h-3.5 w-3.5 mr-1" />
+                        Voice
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
+            {composeStaged.length > 0 && (
+              <ul className="mt-2 flex flex-wrap gap-1.5">
+                {composeStaged.map((s) => (
+                  <li
+                    key={s.id}
+                    className="flex items-center gap-1 text-[10px] bg-background border rounded px-1.5 py-0.5 max-w-full"
+                  >
+                    {s.previewUrl ? (
+                      <img
+                        src={s.previewUrl}
+                        alt=""
+                        className="h-6 w-6 object-cover rounded"
+                      />
+                    ) : null}
+                    <span className="truncate max-w-[120px]">{s.file.name}</span>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground shrink-0"
+                      onClick={() => removeComposeStaged(s.id)}
+                      aria-label="Remove attachment"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
             <div className="flex items-center justify-between mt-2">
               <span className="text-xs text-muted-foreground">⌘↵ to submit</span>
               <Button
                 size="sm"
                 onClick={handleSubmitComment}
-                disabled={!newComment.trim() || submittingComment}
+                disabled={
+                  (!newComment.trim() && composeStaged.length === 0) ||
+                  submittingComment
+                }
                 className="h-7"
               >
                 {submittingComment ? (
@@ -605,200 +1348,320 @@ export function ReviewViewer({
           </div>
         )}
 
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <span className="text-sm font-semibold">Comments ({threads.length})</span>
+        <div className="px-3 pt-3 pb-2 border-b bg-card/80 space-y-2 shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold tracking-tight text-foreground">
+              Comments
+            </h2>
+            <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+              Drop a pin on the content, then add text, files, or voice — same
+              idea as tools like Markup.io: contextual feedback in one place.
+            </p>
+          </div>
+          <div className="flex rounded-lg bg-muted/80 p-0.5 gap-0.5">
+            {(
+              [
+                { key: "all" as const, label: "All" },
+                { key: "open" as const, label: "Open" },
+                { key: "resolved" as const, label: "Resolved" },
+              ] as const
+            ).map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setCommentSidebarFilter(key)}
+                className={cn(
+                  "flex-1 text-[11px] font-medium py-1.5 rounded-md transition-colors",
+                  commentSidebarFilter === key
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+            <Input
+              type="search"
+              placeholder="Search comments…"
+              value={commentSearchQuery}
+              onChange={(e) => setCommentSearchQuery(e.target.value)}
+              className="h-8 pl-8 text-xs bg-background"
+              aria-label="Search comments"
+            />
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {activeThreads.length} open · {completedThreads.length} resolved / closed
+          </p>
         </div>
 
-        <ScrollArea className="flex-1">
-          <div className="p-3 space-y-2">
+        <ScrollArea className="flex-1 bg-muted/10">
+          <div className="p-3 space-y-3">
             {threads.length === 0 && !pendingAnnotationId && (
-              <div className="text-center py-10 text-muted-foreground">
-                <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                <p className="text-sm">Click on the content to add a comment</p>
+              <div className="text-center py-10 px-2 text-muted-foreground rounded-xl border border-dashed border-border/60 bg-card/50">
+                <MessageSquare className="h-9 w-9 mx-auto mb-3 opacity-25" />
+                <p className="text-sm font-medium text-foreground/80">
+                  No comments yet
+                </p>
+                <p className="text-xs mt-1.5 leading-relaxed">
+                  Click anywhere on the content to place a pin, then describe your
+                  feedback. Optional files and voice notes are supported.
+                </p>
               </div>
             )}
 
-            {threads.map((thread, index) => {
-              const annotation = annotations.find(
-                (a) =>
-                  a.commentThreadId === thread.id ||
-                  a.id === thread.rootAnnotationId
-              );
-              const pinNumber = annotation
-                ? annotations.indexOf(annotation) + 1
-                : index + 1;
-              const isSelected = annotation?.id === selectedAnnotationId;
-              const firstMessage = thread.messages.filter(
-                (m) => !m.isSystemMessage
-              )[0];
-              const author = firstMessage?.createdByUser
-                ? `${firstMessage.createdByUser.firstName} ${firstMessage.createdByUser.lastName}`
-                : firstMessage?.createdByGuest?.name ?? "Unknown";
-              const replies = thread.messages
-                .filter((m) => !m.isSystemMessage)
-                .slice(1);
-
-              return (
-                <div
-                  key={thread.id}
-                  className={`rounded-lg border p-3 cursor-pointer transition-colors ${
-                    isSelected
-                      ? "border-blue-400 bg-blue-50/50 shadow-sm"
-                      : "border-transparent bg-background hover:border-border"
-                  }`}
-                  onClick={() => handleCommentClick(thread)}
-                >
-                  <div className="flex items-start gap-2">
-                    <span
-                      className="w-5 h-5 rounded-full text-white text-xs flex items-center justify-center font-bold shrink-0 mt-0.5"
-                      style={{
-                        backgroundColor: annotation?.color || "#3b82f6",
-                      }}
-                    >
-                      {pinNumber}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1 mb-1">
-                        <span className="text-xs font-medium truncate">
-                          {author}
-                        </span>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <select
-                            value={thread.status}
-                            onChange={(e) => {
-                              e.stopPropagation();
-                              handleStatusChange(
-                                thread.id,
-                                e.target.value as CommentStatus
-                              );
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-xs border-0 bg-transparent p-0 pr-4 cursor-pointer focus:outline-none"
-                          >
-                            {(Object.keys(statusConfig) as CommentStatus[]).map(
-                              (s) => (
-                                <option key={s} value={s}>
-                                  {statusConfig[s].label}
-                                </option>
-                              )
-                            )}
-                          </select>
-                          <button
-                            className="h-5 w-5 flex items-center justify-center text-muted-foreground hover:text-destructive rounded"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteThread(thread.id);
-                            }}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {firstMessage && (
-                        <>
-                          <p className="text-sm text-foreground leading-snug line-clamp-3">
-                            {firstMessage.body}
-                          </p>
-                          {annotation?.screenshotContextPath && (
-                            <div className="mt-2">
-                              <div className="relative w-full rounded border border-muted bg-black/5 overflow-hidden max-h-48">
-                                <img
-                                  src={`/uploads${annotation.screenshotContextPath}`}
-                                  alt="Screenshot context"
-                                  className="w-full h-auto object-contain"
-                                  loading="lazy"
-                                />
-                                {/* Pin rendered on top of the screenshot using stored percentages */}
-                                {typeof annotation.xPercent === "number" &&
-                                  typeof annotation.yPercent === "number" && (
-                                    <div
-                                      className="absolute flex items-center justify-center"
-                                      style={{
-                                        left: `${annotation.xPercent * 100}%`,
-                                        top: `${annotation.yPercent * 100}%`,
-                                        transform: "translate(-50%, -50%)",
-                                      }}
-                                    >
-                                      <span className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] flex items-center justify-center font-bold shadow">
-                                        {pinNumber}
-                                      </span>
-                                    </div>
-                                  )}
-                              </div>
-                            </div>
-                          )}
-                        </>
-                      )}
-
-                      {replies.length > 0 && (
-                        <div className="mt-2 space-y-1.5 border-l-2 border-muted pl-2">
-                          {replies.map((r) => (
-                            <div key={r.id}>
-                              <span className="text-xs font-medium text-muted-foreground">
-                                {r.createdByUser
-                                  ? `${r.createdByUser.firstName} ${r.createdByUser.lastName}`
-                                  : r.createdByGuest?.name}
-                                :
-                              </span>
-                              <p className="text-xs text-foreground">{r.body}</p>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {replyingToThreadId === thread.id ? (
-                        <div
-                          className="mt-2"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <Textarea
-                            value={replyText}
-                            onChange={(e) => setReplyText(e.target.value)}
-                            placeholder="Reply…"
-                            className="text-xs min-h-[60px] resize-none"
-                            autoFocus
-                          />
-                          <div className="flex gap-1 mt-1">
-                            <Button
-                              size="sm"
-                              className="h-6 text-xs"
-                              onClick={() => handleReply(thread.id)}
-                              disabled={!replyText.trim() || submittingComment}
-                            >
-                              Reply
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-6 text-xs"
-                              onClick={() => setReplyingToThreadId(null)}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
+            {threads.length > 0 && (
+              <>
+                {(commentSidebarFilter === "all" ||
+                  commentSidebarFilter === "open") && (
+                  <section>
+                    <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-0.5">
+                      Open
+                    </h3>
+                    <div className="space-y-2">
+                      {filteredOpenThreads.length === 0 ? (
+                        <p className="text-xs text-muted-foreground py-2 px-1">
+                          {commentSearchQuery.trim()
+                            ? "No open comments match your search."
+                            : "No open comments. Resolve items to move them below."}
+                        </p>
                       ) : (
-                        <button
-                          className="text-xs text-muted-foreground hover:text-foreground mt-1.5"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setReplyingToThreadId(thread.id);
-                          }}
-                        >
-                          Reply
-                        </button>
+                        filteredOpenThreads.map((t) => renderThreadCard(t))
                       )}
                     </div>
-                  </div>
-                </div>
-              );
-            })}
+                  </section>
+                )}
+
+                {(commentSidebarFilter === "resolved" ||
+                  (commentSidebarFilter === "all" &&
+                    completedThreads.length > 0)) && (
+                  <section
+                    className={cn(
+                      commentSidebarFilter === "all" &&
+                        activeThreads.length > 0 &&
+                        "pt-1"
+                    )}
+                  >
+                    {commentSidebarFilter === "all" ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setResolvedCommentsExpanded((e) => !e)
+                        }
+                        className="flex items-center gap-1.5 w-full text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-0.5 py-1 rounded-md hover:bg-muted/60 transition-colors"
+                      >
+                        {resolvedCommentsExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                        Resolved & closed ({completedThreads.length})
+                      </button>
+                    ) : (
+                      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2 px-0.5 pt-1">
+                        Resolved & closed
+                      </h3>
+                    )}
+                    {(commentSidebarFilter === "resolved" ||
+                      resolvedCommentsExpanded) && (
+                      <div className="space-y-2">
+                        {filteredCompletedThreads.length === 0 ? (
+                          <p className="text-xs text-muted-foreground py-2 px-1">
+                            {commentSearchQuery.trim()
+                              ? "No resolved comments match your search."
+                              : "Nothing resolved yet."}
+                          </p>
+                        ) : (
+                          filteredCompletedThreads.map((t) =>
+                            renderThreadCard(t)
+                          )
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
+              </>
+            )}
           </div>
         </ScrollArea>
       </div>
     </div>
+
+    <CommentThreadDetailDialog
+      open={!!detailThreadId && !!detailThread}
+      onOpenChange={handleDetailOpenChange}
+      thread={detailThread}
+      pinNumber={detailPinNumber}
+      pinColor={detailAnnotation?.color ?? "#3b82f6"}
+      screenshotContextPath={detailAnnotation?.screenshotContextPath ?? null}
+      contextMarkerLeftPercent={detailContextMarkers.left}
+      contextMarkerTopPercent={detailContextMarkers.top}
+      onOpenScreenshot={(url) =>
+        setContextLightbox({
+          src: url,
+          pinNumber: detailPinNumber,
+          pinColor: detailAnnotation?.color ?? "#3b82f6",
+          markerLeftPercent: detailContextMarkers.left,
+          markerTopPercent: detailContextMarkers.top,
+        })
+      }
+      onStatusChange={handleStatusChange}
+      onDeleteThread={handleDeleteThread}
+      replyArea={
+        detailThread ? (
+          <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+            <Textarea
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              placeholder="Reply… (optional if you attach files or voice)"
+              className="text-sm min-h-[72px] resize-none"
+            />
+            {canUploadAttachments && (
+              <>
+                <input
+                  ref={replyFileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  accept="image/*,audio/*,.pdf,.txt,.zip,.doc,.docx,.xls,.xlsx"
+                  onChange={(e) => {
+                    const list = e.target.files;
+                    if (list?.length) addReplyFiles(list);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => replyFileInputRef.current?.click()}
+                    disabled={replyStaged.length >= 8 || submittingComment}
+                  >
+                    <Paperclip className="h-3.5 w-3.5 mr-1" />
+                    Files
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={
+                      recordingFor === "reply" ? "destructive" : "outline"
+                    }
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() =>
+                      recordingFor === "reply"
+                        ? stopVoiceRecording()
+                        : startVoiceRecording("reply")
+                    }
+                    disabled={replyStaged.length >= 8 || submittingComment}
+                  >
+                    {recordingFor === "reply" ? (
+                      <>
+                        <Square className="h-3 w-3 mr-1 fill-current" />
+                        Stop
+                      </>
+                    ) : (
+                      <>
+                        <Mic className="h-3.5 w-3.5 mr-1" />
+                        Voice
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
+            {replyStaged.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5 mt-1">
+                {replyStaged.map((s) => (
+                  <li
+                    key={s.id}
+                    className="flex items-center gap-1 text-xs bg-background border rounded px-2 py-1"
+                  >
+                    {s.previewUrl ? (
+                      <img
+                        src={s.previewUrl}
+                        alt=""
+                        className="h-6 w-6 object-cover rounded"
+                      />
+                    ) : null}
+                    <span className="truncate max-w-[140px]">{s.file.name}</span>
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => removeReplyStaged(s.id)}
+                      aria-label="Remove"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button
+              size="sm"
+              className="mt-1"
+              onClick={() => void handleReply(detailThread.id)}
+              disabled={
+                (!replyText.trim() && replyStaged.length === 0) ||
+                submittingComment
+              }
+            >
+              {submittingComment ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-1" />
+                  Send reply
+                </>
+              )}
+            </Button>
+          </div>
+        ) : null
+      }
+    />
+
+    <Dialog
+      open={!!contextLightbox}
+      onOpenChange={(open) => {
+        if (!open) setContextLightbox(null);
+      }}
+    >
+      <DialogContent className="max-w-[min(96vw,1200px)] w-auto max-h-[96vh] overflow-auto p-2 sm:p-3 border bg-background">
+        <DialogTitle className="sr-only">Page context screenshot</DialogTitle>
+        {contextLightbox ? (
+          <ContextScreenshotWithPin
+            src={contextLightbox.src}
+            alt="Full page context"
+            pinNumber={contextLightbox.pinNumber}
+            pinColor={contextLightbox.pinColor}
+            markerLeftPercent={contextLightbox.markerLeftPercent ?? 50}
+            markerTopPercent={contextLightbox.markerTopPercent ?? 50}
+            imgClassName="max-h-[min(90vh,900px)] w-full object-contain rounded-md mx-auto"
+          />
+        ) : null}
+      </DialogContent>
+    </Dialog>
+    </>
   );
+}
+
+function normalizeWebsiteUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  let candidate = trimmed;
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = candidate.startsWith("//") ? `https:${candidate}` : `https://${candidate}`;
+  }
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.href;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -824,7 +1687,7 @@ function ContentDisplay({
   onWebsiteViewModeChange?: (mode: "live" | "screenshot") => void;
 }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
-  // Set iframe src only after mount so the request runs in the browser (avoids proxy/SSR issues).
+  // Set iframe src only after mount so the request runs in the browser (avoids SSR issues).
   const [iframeSrc, setIframeSrc] = useState<string>("");
 
   useEffect(() => {
@@ -832,11 +1695,14 @@ function ContentDisplay({
     setIframeSrc("");
   }, [sourceUrl]);
 
-  // Set iframe src after mount. Use direct URL so the browser loads the site (proxy often fails or renders blank).
+  // Load through /api/proxy so target X-Frame-Options / CSP frame-ancestors do not block the iframe.
   useEffect(() => {
-    if (type === "WEBSITE" && sourceUrl && typeof sourceUrl === "string" && sourceUrl.startsWith("http")) {
-      setIframeSrc(sourceUrl);
-    }
+    if (type !== "WEBSITE" || !sourceUrl) return;
+    const normalized = normalizeWebsiteUrl(sourceUrl);
+    if (!normalized) return;
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    if (!origin) return;
+    setIframeSrc(`${origin}/api/proxy?url=${encodeURIComponent(normalized)}`);
   }, [type, sourceUrl]);
 
   // If iframe onLoad never fires (e.g. slow or heavy page), stop showing loader after 10s
@@ -863,7 +1729,7 @@ function ContentDisplay({
               Screenshot mode
             </button>
             <a
-              href={sourceUrl}
+              href={normalizeWebsiteUrl(sourceUrl) ?? sourceUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
@@ -884,8 +1750,8 @@ function ContentDisplay({
           )}
 
           {/*
-           * iframe src is set in useEffect (client-only). Direct URL so browser loads the site.
-           * When in annotate mode, pointer-events:none on iframe so clicks hit the SVG.
+           * iframe loads /api/proxy?url=… (same-origin) so remote X-Frame-Options / CSP do not block embed.
+           * In annotate mode the SVG layer above captures pointer events.
            */}
           {iframeSrc ? (
           <iframe

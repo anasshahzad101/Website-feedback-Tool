@@ -20,7 +20,7 @@ export default function Icon() {
           fontFamily: "system-ui, sans-serif",
         }}
       >
-        C
+        W
       </div>
     ),
     { ...size }

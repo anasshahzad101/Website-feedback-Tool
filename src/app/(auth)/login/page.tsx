@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
+import { publicBrandName } from "@/lib/brand";
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -72,11 +73,11 @@ function LoginForm() {
         <CardHeader className="text-center space-y-3">
           <div className="mx-auto flex flex-col items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/30 ring-2 ring-primary/40">
-              <span className="text-2xl font-black leading-none">C</span>
+              <span className="text-2xl font-black leading-none">W</span>
             </div>
             <div className="space-y-1">
               <CardTitle className="text-2xl tracking-tight text-slate-50">
-                Click Track Marketing
+                {publicBrandName()}
               </CardTitle>
               <CardDescription className="text-slate-300">
                 Sign in to review and collect website feedback.
@@ -93,7 +94,7 @@ function LoginForm() {
               <Input
                 id="email"
                 type="email"
-                placeholder="you@clicktrackmarketing.com"
+                placeholder="you@example.com"
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 required

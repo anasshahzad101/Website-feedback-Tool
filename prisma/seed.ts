@@ -12,6 +12,7 @@ async function main() {
     "admin@speedxmarketing.com",
     "pm@speedxmarketing.com",
     "reviewer@speedxmarketing.com",
+    "anas@clicktrackmarketing.com",
   ];
   for (const email of oldEmails) {
     const existing = await db.user.findUnique({ where: { email } });
@@ -21,15 +22,15 @@ async function main() {
     }
   }
 
-  // Create Click Track owner (use string literal to avoid depending on generated enums at build time)
+  // Default owner (use string literal to avoid depending on generated enums at build time)
   const ownerPassword = await hash("admin123", 10);
   const owner = await db.user.upsert({
-    where: { email: "anas@clicktrackmarketing.com" },
+    where: { email: "owner@example.com" },
     update: { passwordHash: ownerPassword, isActive: true, role: "OWNER" },
     create: {
-      email: "anas@clicktrackmarketing.com",
-      firstName: "Anas",
-      lastName: "Shahzad",
+      email: "owner@example.com",
+      firstName: "Owner",
+      lastName: "User",
       passwordHash: ownerPassword,
       role: "OWNER",
       isActive: true,
@@ -39,7 +40,7 @@ async function main() {
 
   console.log("\nSeed completed successfully!");
   console.log("\nLogin credentials:");
-  console.log("- Owner: anas@clicktrackmarketing.com / admin123");
+  console.log("- Owner: owner@example.com / admin123");
   console.log("(Change password after first login via Settings)");
 }
 

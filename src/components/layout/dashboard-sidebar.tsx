@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/utils";
+import { publicBrandName } from "@/lib/brand";
 
 interface DashboardSidebarProps {
   user: {
@@ -97,12 +98,12 @@ export function DashboardSidebar({ user, userRole }: DashboardSidebarProps) {
           )}
         >
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white ring-1 ring-white/10">
-            <span className="text-lg font-black leading-none">C</span>
+            <span className="text-lg font-black leading-none">W</span>
           </div>
           {!collapsed && (
             <div className="flex flex-col leading-tight min-w-0">
               <span className="text-sm font-semibold tracking-tight text-white truncate">
-                Click Track Marketing
+                {publicBrandName()}
               </span>
               <span className="text-[11px] uppercase tracking-wider text-slate-400">
                 Feedback tool

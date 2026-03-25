@@ -329,6 +329,8 @@ model CommentMessage {
   id               String   @id @default(uuid())
   threadId         String   @map("thread_id")
   body             String
+  /// JSON array: { kind: "image"|"audio"|"file", path: "/comment-attachments/...", name, mime? }[]
+  attachments      Json?    @map("attachments")
   createdByUserId  String?  @map("created_by_user_id")
   createdByGuestId String?  @map("created_by_guest_id")
   isSystemMessage  Boolean  @default(false) @map("is_system_message")
