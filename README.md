@@ -121,7 +121,7 @@ If the database has **no users** (typical on a fresh production MySQL after migr
 
 ### Hostinger: all variables in one place
 
-Fill in **[`hostinger.env.template`](hostinger.env.template)** with your MySQL URL, domain, and a generated `AUTH_SECRET`, then copy each variable into **hPanel → Node.js → Environment variables**. The repo cannot set Hostinger for you; that file is the full checklist.
+Fill in **[`hostinger.env.template`](hostinger.env.template)** (commented) or **[`hostinger.import.env`](hostinger.import.env)** (one variable per line, easy for Hostinger “import .env”) with your MySQL URL, domain, and a generated `AUTH_SECRET`, then import or paste into **hPanel → Node.js → Environment variables**. **Do not commit** a filled file to git.
 
 ### Demo credentials (local seed only)
 
