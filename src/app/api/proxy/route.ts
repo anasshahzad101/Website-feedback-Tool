@@ -287,17 +287,18 @@ function injectRuntimeRewriter(html: string, baseUrl: URL): string {
   const script = `<script>(function(){try{
 const ORIGIN=${JSON.stringify(baseUrl.origin)};
 const PROXY_PREFIX="/api/proxy?url=";
-const toAbs=(u)=>{if(!u)return null;const s=String(u).trim();if(!s||s.startsWith("data:")||s.startsWith("blob:")||s.startsWith("javascript:"))return null;try{return new URL(s,ORIGIN+"/").toString();}catch{return null;}};
-const toProxy=(u)=>{const abs=toAbs(u);return abs?PROXY_PREFIX+encodeURIComponent(abs):u;};
+const isAlreadyProxied=(s)=>{const v=String(s||"").trim();return v.startsWith(PROXY_PREFIX)||v.includes("/api/proxy?url=");};
+const toAbs=(u)=>{if(!u)return null;const s=String(u).trim();if(!s||s.startsWith("data:")||s.startsWith("blob:")||s.startsWith("javascript:"))return null;if(isAlreadyProxied(s))return null;try{return new URL(s,ORIGIN+"/").toString();}catch{return null;}};
+const toProxy=(u)=>{const raw=String(u||"").trim();if(!raw||isAlreadyProxied(raw))return raw;const abs=toAbs(raw);return abs?PROXY_PREFIX+encodeURIComponent(abs):raw;};
 const attrs=["src","href","action","poster","data-src","data-href","data-bg","data-background"];
 const fixEl=(el)=>{if(!el||!el.getAttribute)return;
-for(const a of attrs){const v=el.getAttribute(a);if(!v)continue;const p=toProxy(v);if(p&&p!==v)el.setAttribute(a,p);}
-const ss=el.getAttribute("srcset");if(ss){const next=ss.split(",").map(part=>{const t=part.trim();if(!t)return t;const bits=t.split(/\\s+/);const p=toProxy(bits[0]);return [p,...bits.slice(1)].join(" ");}).join(", ");if(next!==ss)el.setAttribute("srcset",next);}
-if(el.tagName==="STYLE"&&el.textContent){el.textContent=el.textContent.replace(/url\\(([^)]+)\\)/gi,(m,inner)=>{const raw=String(inner).trim().replace(/^['"]|['"]$/g,"");const p=toProxy(raw);return p?('url("'+p+'")'):m;});}
+for(const a of attrs){const v=el.getAttribute(a);if(!v||isAlreadyProxied(v))continue;const p=toProxy(v);if(p&&p!==v)el.setAttribute(a,p);}
+const ss=el.getAttribute("srcset");if(ss&&!ss.includes("/api/proxy?url=")){const next=ss.split(",").map(part=>{const t=part.trim();if(!t)return t;const bits=t.split(/\\s+/);const p=toProxy(bits[0]);return [p,...bits.slice(1)].join(" ");}).join(", ");if(next!==ss)el.setAttribute("srcset",next);}
+if(el.tagName==="STYLE"&&el.textContent&&!el.textContent.includes("/api/proxy?url=")){el.textContent=el.textContent.replace(/url\\(([^)]+)\\)/gi,(m,inner)=>{const raw=String(inner).trim().replace(/^['"]|['"]$/g,"");const p=toProxy(raw);return p?('url("'+p+'")'):m;});}
 };
 document.querySelectorAll("*").forEach(fixEl);
-const obs=new MutationObserver((mut)=>{for(const m of mut){if(m.type==="attributes"){fixEl(m.target);}if(m.addedNodes){m.addedNodes.forEach((n)=>{if(n&&n.nodeType===1){fixEl(n);n.querySelectorAll&&n.querySelectorAll("*").forEach(fixEl);}});}}});
-obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:["src","href","action","poster","srcset","data-src","data-href","data-bg","data-background"]});
+const obs=new MutationObserver((mut)=>{for(const m of mut){if(m.addedNodes){m.addedNodes.forEach((n)=>{if(n&&n.nodeType===1){fixEl(n);n.querySelectorAll&&n.querySelectorAll("*").forEach(fixEl);}});}}});
+obs.observe(document.documentElement,{subtree:true,childList:true});
 }catch(e){console.warn("proxy runtime rewrite failed",e);}})();</script>`;
   if (/<\/head>/i.test(html)) {
     return html.replace(/<\/head>/i, `${script}</head>`);
