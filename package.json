@@ -24,6 +24,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@types/nodemailer": "^6.4.17",
     "@types/bcryptjs": "^2.4.6",
     "@auth/prisma-adapter": "^2.7.4",
     "@hookform/resolvers": "^3.9.1",
@@ -98,7 +99,6 @@
     "@eslint/eslintrc": "^3",
     "@types/mime-types": "^2.1.4",
     "@types/node": "^22.10.5",
-    "@types/nodemailer": "^6.4.17",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "eslint": "^9.17.0",
