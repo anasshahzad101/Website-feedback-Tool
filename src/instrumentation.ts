@@ -1,10 +1,10 @@
-import { ensureMysqlDatabaseUrlEnv } from "@/lib/db/database-url";
+import { bootstrapServerEnv } from "@/lib/env/server-env-bootstrap";
 
 /**
  * Runs once per server cold start. Surfaces misconfiguration that causes Auth.js /api/auth/* to return 500.
  */
 export async function register() {
-  ensureMysqlDatabaseUrlEnv();
+  bootstrapServerEnv();
 
   const onVercel = process.env.VERCEL === "1";
   const inProd = process.env.NODE_ENV === "production";

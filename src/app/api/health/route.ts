@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { ensureMysqlDatabaseUrlEnv } from "@/lib/db/database-url";
 import { db } from "@/lib/db/client";
+import { probeMysqlWithPool } from "@/lib/db/mysql-probe";
+import { extractPrismaDbError } from "@/lib/db/prisma-error";
+import { bootstrapServerEnv } from "@/lib/env/server-env-bootstrap";
 
 function redactConnectionDetails(message: string): string {
   return message
@@ -12,29 +14,48 @@ function redactConnectionDetails(message: string): string {
  * Deploy check: verify auth env and DB without exposing secrets.
  * Open https://yourdomain.com/api/health on the server to debug login issues.
  *
- * Set HEALTH_FULL_ERRORS=true temporarily to include dbErrorMessage (still redacted).
+ * On Prisma failure we run a mysql2 ping and log DB_CONNECT_ERROR (see Hostinger logs).
+ * Set HEALTH_FULL_ERRORS=true to add a longer redacted prisma message.
  */
 export async function GET() {
-  ensureMysqlDatabaseUrlEnv();
+  bootstrapServerEnv();
   const databaseUrlSet = !!process.env.DATABASE_URL?.trim();
 
   let dbStatus: "ok" | "error" | "skipped" = "skipped";
   let dbErrorCode: string | undefined;
   let dbErrorMessage: string | undefined;
+  let mysqlProbe:
+    | { ok: true }
+    | {
+        ok: false;
+        code?: string;
+        errno?: number;
+        sqlState?: string;
+        message: string;
+      }
+    | undefined;
+
   if (databaseUrlSet) {
     dbStatus = "error";
     try {
       await db.$queryRaw`SELECT 1`;
       dbStatus = "ok";
     } catch (e: unknown) {
-      const err = e as { errorCode?: string; code?: string };
-      dbErrorCode =
-        err.errorCode ??
-        err.code ??
-        (e instanceof Error ? e.message.match(/\b(P\d{4})\b/)?.[1] : undefined);
-      if (process.env.HEALTH_FULL_ERRORS === "true" && e instanceof Error) {
-        dbErrorMessage = redactConnectionDetails(e.message);
+      console.error("[health] Prisma DB check failed:", e);
+      const extracted = extractPrismaDbError(e);
+      dbErrorCode = extracted.prismaCode;
+      dbErrorMessage = extracted.message
+        ? redactConnectionDetails(extracted.message)
+        : e instanceof Error
+          ? redactConnectionDetails(e.message)
+          : undefined;
+      if (process.env.HEALTH_FULL_ERRORS !== "true") {
+        dbErrorMessage =
+          dbErrorMessage && dbErrorMessage.length > 220
+            ? `${dbErrorMessage.slice(0, 220)}…`
+            : dbErrorMessage;
       }
+      mysqlProbe = await probeMysqlWithPool();
     }
   }
 
@@ -52,6 +73,7 @@ export async function GET() {
     databaseUrlSet,
     dbErrorCode: dbErrorCode ?? null,
     dbErrorMessage: dbErrorMessage ?? null,
+    mysqlProbe: mysqlProbe ?? null,
     warnings: warnings.length ? warnings : undefined,
     authSecretSet: !!authSecret,
     authSecretSource: authSecret

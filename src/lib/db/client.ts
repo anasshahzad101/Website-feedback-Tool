@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
-import { ensureMysqlDatabaseUrlEnv } from "./database-url";
+import { bootstrapServerEnv } from "@/lib/env/server-env-bootstrap";
 
-ensureMysqlDatabaseUrlEnv();
+bootstrapServerEnv();
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
