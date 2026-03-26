@@ -127,10 +127,10 @@ export async function GET(req: NextRequest) {
         html = baseTag + html;
       }
 
-      // Rewrite resource URLs (images, scripts, stylesheets) to go through proxy
-      // This handles absolute URLs to other origins that might have CSP issues
+      // Stability-first: keep resource URLs direct whenever possible to avoid
+      // proxy storms (many nested /api/proxy fetches) on heavy marketing pages.
+      // We only normalize root-relative links to absolute target URLs.
       html = rewriteResourceUrls(html, targetUrl);
-      html = injectRuntimeRewriter(html, targetUrl);
 
       responseHeaders.set("content-type", "text/html; charset=utf-8");
       for (const [k, v] of Object.entries(NO_STORE_PREVIEW_HEADERS)) {
@@ -184,38 +184,6 @@ export async function GET(req: NextRequest) {
  * so they also pass through our proxy (avoiding CSP issues)
  */
 function rewriteResourceUrls(html: string, baseUrl: URL): string {
-  // Rewrite src= and href= attributes that are absolute external URLs
-  // We leave relative URLs alone since the <base> tag handles those
-  html = html.replace(
-    /((?:src|href|action)=["'])(https?:\/\/[^"']+)(["'])/gi,
-    (match, prefix, absUrl, suffix) => {
-      try {
-        // Always proxy absolute URLs (including same-origin assets) so they
-        // load via our origin and avoid CORS issues inside the iframe.
-        return `${prefix}/api/proxy?url=${encodeURIComponent(absUrl)}${suffix}`;
-      } catch {
-        return match;
-      }
-    }
-  );
-
-  // Rewrite srcset entries (absolute URLs)
-  html = html.replace(/(srcset=["'])([^"']+)(["'])/gi, (match, prefix, value, suffix) => {
-    const rewritten = String(value)
-      .split(",")
-      .map((part) => {
-        const trimmed = part.trim();
-        if (!trimmed) return trimmed;
-        const bits = trimmed.split(/\s+/);
-        const candidate = bits[0] ?? "";
-        if (!/^https?:\/\//i.test(candidate)) return trimmed;
-        const proxied = `/api/proxy?url=${encodeURIComponent(candidate)}`;
-        return [proxied, ...bits.slice(1)].join(" ");
-      })
-      .join(", ");
-    return `${prefix}${rewritten}${suffix}`;
-  });
-
   // Rewrite root-relative URLs (e.g. /wp-content/...) to proxied absolute URLs.
   // <base> does not affect root-relative paths, so without this they incorrectly
   // resolve to our own origin and 404.
@@ -224,7 +192,7 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
     (match, prefix, rootRelativePath, suffix) => {
       try {
         const absUrl = `${baseUrl.origin}${rootRelativePath}`;
-        return `${prefix}/api/proxy?url=${encodeURIComponent(absUrl)}${suffix}`;
+        return `${prefix}${absUrl}${suffix}`;
       } catch {
         return match;
       }
@@ -242,8 +210,7 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
         const candidate = bits[0] ?? "";
         if (!candidate.startsWith("/") || candidate.startsWith("//")) return trimmed;
         const absUrl = `${baseUrl.origin}${candidate}`;
-        const proxied = `/api/proxy?url=${encodeURIComponent(absUrl)}`;
-        return [proxied, ...bits.slice(1)].join(" ");
+        return [absUrl, ...bits.slice(1)].join(" ");
       })
       .join(", ");
     return `${prefix}${rewritten}${suffix}`;
@@ -252,10 +219,7 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
   return html;
 }
 
-/**
- * Rewrite CSS url(...) entries through our proxy so fonts/images from external
- * origins don't get blocked by browser CORS when loaded from our origin.
- */
+/** Keep CSS imports/assets direct to reduce nested proxy load. */
 function rewriteCssUrls(css: string, baseUrl: URL): string {
   let out = css.replace(/url\(([^)]+)\)/gi, (full, rawInner) => {
     const inner = String(rawInner).trim().replace(/^['"]|['"]$/g, "");
@@ -264,7 +228,7 @@ function rewriteCssUrls(css: string, baseUrl: URL): string {
     }
     try {
       const resolved = new URL(inner, `${baseUrl.origin}${baseUrl.pathname}`).toString();
-      return `url("/api/proxy?url=${encodeURIComponent(resolved)}")`;
+      return `url("${resolved}")`;
     } catch {
       return full;
     }
@@ -275,36 +239,10 @@ function rewriteCssUrls(css: string, baseUrl: URL): string {
     if (!inner || inner.startsWith("data:") || inner.startsWith("blob:")) return full;
     try {
       const resolved = new URL(inner, `${baseUrl.origin}${baseUrl.pathname}`).toString();
-      return `@import url("/api/proxy?url=${encodeURIComponent(resolved)}")`;
+      return `@import url("${resolved}")`;
     } catch {
       return full;
     }
   });
   return out;
-}
-
-function injectRuntimeRewriter(html: string, baseUrl: URL): string {
-  const script = `<script>(function(){try{
-const ORIGIN=${JSON.stringify(baseUrl.origin)};
-const PROXY_PREFIX="/api/proxy?url=";
-const isAlreadyProxied=(s)=>{const v=String(s||"").trim();return v.startsWith(PROXY_PREFIX)||v.includes("/api/proxy?url=");};
-const toAbs=(u)=>{if(!u)return null;const s=String(u).trim();if(!s||s.startsWith("data:")||s.startsWith("blob:")||s.startsWith("javascript:"))return null;if(isAlreadyProxied(s))return null;try{return new URL(s,ORIGIN+"/").toString();}catch{return null;}};
-const toProxy=(u)=>{const raw=String(u||"").trim();if(!raw||isAlreadyProxied(raw))return raw;const abs=toAbs(raw);return abs?PROXY_PREFIX+encodeURIComponent(abs):raw;};
-const attrs=["src","href","action","poster","data-src","data-href","data-bg","data-background"];
-const fixEl=(el)=>{if(!el||!el.getAttribute)return;
-for(const a of attrs){const v=el.getAttribute(a);if(!v||isAlreadyProxied(v))continue;const p=toProxy(v);if(p&&p!==v)el.setAttribute(a,p);}
-const ss=el.getAttribute("srcset");if(ss&&!ss.includes("/api/proxy?url=")){const next=ss.split(",").map(part=>{const t=part.trim();if(!t)return t;const bits=t.split(/\\s+/);const p=toProxy(bits[0]);return [p,...bits.slice(1)].join(" ");}).join(", ");if(next!==ss)el.setAttribute("srcset",next);}
-if(el.tagName==="STYLE"&&el.textContent&&!el.textContent.includes("/api/proxy?url=")){el.textContent=el.textContent.replace(/url\\(([^)]+)\\)/gi,(m,inner)=>{const raw=String(inner).trim().replace(/^['"]|['"]$/g,"");const p=toProxy(raw);return p?('url("'+p+'")'):m;});}
-};
-document.querySelectorAll("*").forEach(fixEl);
-const obs=new MutationObserver((mut)=>{for(const m of mut){if(m.addedNodes){m.addedNodes.forEach((n)=>{if(n&&n.nodeType===1){fixEl(n);n.querySelectorAll&&n.querySelectorAll("*").forEach(fixEl);}});}}});
-obs.observe(document.documentElement,{subtree:true,childList:true});
-}catch(e){console.warn("proxy runtime rewrite failed",e);}})();</script>`;
-  if (/<\/head>/i.test(html)) {
-    return html.replace(/<\/head>/i, `${script}</head>`);
-  }
-  if (/<body[^>]*>/i.test(html)) {
-    return html.replace(/(<body[^>]*>)/i, `$1${script}`);
-  }
-  return `${script}${html}`;
 }
