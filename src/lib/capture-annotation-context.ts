@@ -308,28 +308,24 @@ export async function captureIframeViewport(
 
   try {
     const vt = viewportForCapture(doc, win, iframe, options?.frozen);
+    const el = vt.el;
+    const prevSL = el.scrollLeft;
+    const prevST = el.scrollTop;
+    // domToPng does not take scroll offsets — it clones whatever the live DOM shows.
+    // Async capture often runs after scroll has reset, so force the viewport we froze (or resolved).
+    el.scrollLeft = vt.scrollLeft;
+    el.scrollTop = vt.scrollTop;
 
     let dataUrl: string | null = null;
-    const canHeavy = options?.allowHeavyFallback === true;
-    const preferAccuracy = options?.preferAccuracy === true;
-
-    if (preferAccuracy && canHeavy) {
-      // Accuracy path first: captures from the current scroll position.
-      dataUrl = await renderFullAndCropViewport(
-        vt.el,
-        vt.scrollLeft,
-        vt.scrollTop,
-        vt.viewW,
-        vt.viewH
+    try {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
       );
-      // If this fails, still try the faster clone-based path.
-      if (!dataUrl) {
-        dataUrl = await captureWithModernScreenshot(doc, vt);
-      }
-    } else {
-      // Default path: fast first, heavy fallback optional.
-      dataUrl = await captureWithModernScreenshot(doc, vt);
-      if (!dataUrl && canHeavy) {
+      const canHeavy = options?.allowHeavyFallback === true;
+      const preferAccuracy = options?.preferAccuracy === true;
+
+      if (preferAccuracy && canHeavy) {
+        // Accuracy path first: full render + explicit crop using vt scroll.
         dataUrl = await renderFullAndCropViewport(
           vt.el,
           vt.scrollLeft,
@@ -337,8 +333,26 @@ export async function captureIframeViewport(
           vt.viewW,
           vt.viewH
         );
+        if (!dataUrl) {
+          dataUrl = await captureWithModernScreenshot(doc, vt);
+        }
+      } else {
+        dataUrl = await captureWithModernScreenshot(doc, vt);
+        if (!dataUrl && canHeavy) {
+          dataUrl = await renderFullAndCropViewport(
+            vt.el,
+            vt.scrollLeft,
+            vt.scrollTop,
+            vt.viewW,
+            vt.viewH
+          );
+        }
       }
+    } finally {
+      el.scrollLeft = prevSL;
+      el.scrollTop = prevST;
     }
+
     if (!dataUrl) return null;
 
     if (pin) {

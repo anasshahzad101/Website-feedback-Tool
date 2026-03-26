@@ -658,7 +658,7 @@ export function ReviewViewer({
                         frozen: frozenWebsiteViewport,
                       }
                     ),
-                    16000
+                    25000
                   );
                   if (dataUrl) {
                     const shotRes = await postJsonWithTimeout(
@@ -673,20 +673,9 @@ export function ReviewViewer({
                     }
                   }
                 }
-                // Safety fallback: if live viewport capture fails, use remote capture
-                // so a context image is still attached instead of nothing.
-                if (!screenshotContextPath) {
-                  const shotRes = await postJsonWithTimeout(
-                    "/api/screenshot",
-                    { url: effectiveSourceUrl, contextOnly: true },
-                    12000
-                  );
-                  if (shotRes?.ok) {
-                    const data = await shotRes.json();
-                    screenshotContextPath = (data as { screenshotPath?: string })
-                      .screenshotPath;
-                  }
-                }
+                // Do not fall back to URL-only Microlink here: it always captures the
+                // top of the page and looks like a broken pin snapshot when the user
+                // commented lower on the page.
               } else {
                 const root = contentRef.current;
                 const img = root?.querySelector(
