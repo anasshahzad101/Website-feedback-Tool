@@ -44,6 +44,37 @@ import {
   captureImageAroundPin,
 } from "@/lib/capture-annotation-context";
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise
+      .then((v) => resolve(v))
+      .catch(() => resolve(null))
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+async function postJsonWithTimeout(
+  url: string,
+  body: unknown,
+  timeoutMs: number
+): Promise<Response | null> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type { Annotation };
 
 export interface CommentThread {
@@ -496,10 +527,15 @@ export function ReviewViewer({
             if (websiteViewMode === "live") {
               const iframe = root?.querySelector("iframe");
               if (iframe) {
-                dataUrl = await captureIframeViewport(iframe, {
-                  x: pendingAnnotation.x,
-                  y: pendingAnnotation.y,
-                });
+                // Keep comment submit snappy on heavy pages: strict timeout and no heavy fallback.
+                dataUrl = await withTimeout(
+                  captureIframeViewport(
+                    iframe,
+                    { x: pendingAnnotation.x, y: pendingAnnotation.y },
+                    { allowHeavyFallback: false }
+                  ),
+                  8000
+                );
               }
             } else {
               const img = root?.querySelector(
@@ -521,26 +557,26 @@ export function ReviewViewer({
             }
 
             if (dataUrl != null) {
-              const shotRes = await fetch("/api/screenshot", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ imageBase64: dataUrl, contextOnly: true }),
-              });
-              if (shotRes.ok) {
+              const shotRes = await postJsonWithTimeout(
+                "/api/screenshot",
+                { imageBase64: dataUrl, contextOnly: true },
+                8000
+              );
+              if (shotRes?.ok) {
                 const data = await shotRes.json();
                 screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
               } else {
-                const d = await shotRes.json().catch(() => ({}));
-                console.error("Screenshot context save failed:", d);
+                const d = await shotRes?.json().catch(() => ({}));
+                console.error("Screenshot context save failed or timed out:", d);
               }
             } else if (websiteViewMode !== "live") {
               // Screenshot mode: optional remote fallback if image crop failed
-              const shotRes = await fetch("/api/screenshot", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url: effectiveSourceUrl, contextOnly: true }),
-              });
-              if (shotRes.ok) {
+              const shotRes = await postJsonWithTimeout(
+                "/api/screenshot",
+                { url: effectiveSourceUrl, contextOnly: true },
+                9000
+              );
+              if (shotRes?.ok) {
                 const data = await shotRes.json();
                 screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
               }
@@ -569,18 +605,18 @@ export function ReviewViewer({
                 pendingAnnotation.yPercent
               );
               if (dataUrl != null) {
-                const shotRes = await fetch("/api/screenshot", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ imageBase64: dataUrl, contextOnly: true }),
-                });
-                if (shotRes.ok) {
+                const shotRes = await postJsonWithTimeout(
+                  "/api/screenshot",
+                  { imageBase64: dataUrl, contextOnly: true },
+                  8000
+                );
+                if (shotRes?.ok) {
                   const data = await shotRes.json();
                   screenshotContextPath = (data as { screenshotPath?: string })
                     .screenshotPath;
                 } else {
-                  const d = await shotRes.json().catch(() => ({}));
-                  console.error("Image context save failed:", d);
+                  const d = await shotRes?.json().catch(() => ({}));
+                  console.error("Image context save failed or timed out:", d);
                 }
               }
             }

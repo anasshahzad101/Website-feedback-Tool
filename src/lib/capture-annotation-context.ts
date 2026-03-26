@@ -102,6 +102,10 @@ function resolveViewportTarget(
 }
 
 export type ViewportPinFocus = { x: number; y: number };
+export type CaptureIframeViewportOptions = {
+  /** Avoid very heavy html2canvas fallback on large/complex pages. */
+  allowHeavyFallback?: boolean;
+};
 
 /** Tighter crop around the pin (CSS px in the iframe / annotation layer). */
 async function focusCropAroundPin(
@@ -254,7 +258,8 @@ async function renderFullAndCropViewport(
 
 export async function captureIframeViewport(
   iframe: HTMLIFrameElement,
-  pin?: ViewportPinFocus
+  pin?: ViewportPinFocus,
+  options?: CaptureIframeViewportOptions
 ): Promise<string | null> {
   const doc = iframe.contentDocument;
   const win = iframe.contentWindow;
@@ -264,7 +269,7 @@ export async function captureIframeViewport(
     const vt = resolveViewportTarget(doc, win, iframe);
 
     let dataUrl = await captureWithModernScreenshot(doc, vt);
-    if (!dataUrl) {
+    if (!dataUrl && options?.allowHeavyFallback) {
       dataUrl = await renderFullAndCropViewport(
         vt.el,
         vt.scrollLeft,
