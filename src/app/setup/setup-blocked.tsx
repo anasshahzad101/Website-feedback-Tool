@@ -45,11 +45,28 @@ export function SetupBlocked({
         </div>
 
         <p className="mt-6 text-xs text-slate-500">
-          Your server logs showed:{" "}
-          <span className="text-slate-400">
-            MissingSecret (no AUTH_SECRET) and/or DATABASE_URL not found
-          </span>
-          . Save variables, then restart or redeploy the Node app.
+          {isMissingUrl ? (
+            <>
+              If login fails with CSRF errors, check server logs for{" "}
+              <span className="text-slate-400">MissingSecret</span> — set{" "}
+              <code className="text-slate-400">AUTH_SECRET</code> and redeploy.
+            </>
+          ) : (
+            <>
+              Env vars look fine if{" "}
+              <Link
+                href="/api/health"
+                className="text-slate-400 underline-offset-2 hover:underline"
+              >
+                /api/health
+              </Link>{" "}
+              shows <code className="text-slate-400">databaseUrlSet</code> and{" "}
+              <code className="text-slate-400">authSecretSet</code>. This screen
+              means MySQL did not accept the connection — fix{" "}
+              <code className="text-slate-400">DATABASE_URL</code> host, user,
+              password, or remote access, then redeploy.
+            </>
+          )}
         </p>
 
         <div className="mt-6 flex flex-wrap gap-3">

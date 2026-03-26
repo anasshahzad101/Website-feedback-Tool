@@ -9,13 +9,18 @@ export async function GET() {
   const databaseUrlSet = !!process.env.DATABASE_URL?.trim();
 
   let dbStatus: "ok" | "error" | "skipped" = "skipped";
+  let dbErrorCode: string | undefined;
   if (databaseUrlSet) {
     dbStatus = "error";
     try {
       await db.$queryRaw`SELECT 1`;
       dbStatus = "ok";
-    } catch {
-      // Wrong credentials, host, or tables missing
+    } catch (e: unknown) {
+      const err = e as { errorCode?: string; code?: string };
+      dbErrorCode =
+        err.errorCode ??
+        err.code ??
+        (e instanceof Error ? e.message.match(/\b(P\d{4})\b/)?.[1] : undefined);
     }
   }
 
@@ -24,6 +29,7 @@ export async function GET() {
 
   return NextResponse.json({
     databaseUrlSet,
+    dbErrorCode: dbErrorCode ?? null,
     authSecretSet: !!authSecret,
     authSecretSource: authSecret
       ? process.env.AUTH_SECRET?.trim()
