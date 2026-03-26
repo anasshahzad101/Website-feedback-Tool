@@ -14,8 +14,10 @@ function redactConnectionDetails(message: string): string {
  * Deploy check: verify auth env and DB without exposing secrets.
  * Open https://yourdomain.com/api/health on the server to debug login issues.
  *
- * On Prisma failure we run a mysql2 ping and log DB_CONNECT_ERROR (see Hostinger logs).
- * Set HEALTH_FULL_ERRORS=true to add a longer redacted prisma message.
+ * On Prisma failure we run a mysql2 ping (pool from DATABASE_URL or DB_* vars) and log
+ * DB_CONNECT_ERROR (see Hostinger logs). Response includes mysqlProbe — if you still see only
+ * db/error without mysqlProbe, the running build is older than this route; redeploy from main.
+ * Set HEALTH_FULL_ERRORS=true for a longer redacted prisma message.
  */
 export async function GET() {
   bootstrapServerEnv();
@@ -32,6 +34,7 @@ export async function GET() {
         errno?: number;
         sqlState?: string;
         message: string;
+        poolSource?: "DATABASE_URL" | "DB_HOST";
       }
     | undefined;
 
@@ -54,6 +57,17 @@ export async function GET() {
           dbErrorMessage && dbErrorMessage.length > 220
             ? `${dbErrorMessage.slice(0, 220)}…`
             : dbErrorMessage;
+      }
+      if (!dbErrorMessage) {
+        let raw = String(e);
+        if (typeof e === "object" && e !== null) {
+          try {
+            raw = JSON.stringify(e, Object.getOwnPropertyNames(e)).slice(0, 400);
+          } catch {
+            raw = String(e);
+          }
+        }
+        dbErrorMessage = redactConnectionDetails(raw);
       }
       mysqlProbe = await probeMysqlWithPool();
     }
