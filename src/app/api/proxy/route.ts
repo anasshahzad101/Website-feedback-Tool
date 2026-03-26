@@ -25,7 +25,11 @@ const BLOCKED_REQUEST_HEADERS = new Set([
 ]);
 
 export async function GET(req: NextRequest) {
-  const url = req.nextUrl.searchParams.get("url");
+  const rawUrl = req.nextUrl.searchParams.get("url");
+  const url = rawUrl
+    ?.replace(/&amp;/gi, "&")
+    .replace(/^['"]|['"]$/g, "")
+    .trim();
   if (!url) {
     return new NextResponse("Missing url parameter", { status: 400 });
   }
@@ -83,6 +87,7 @@ export async function GET(req: NextRequest) {
 
     const contentType = response.headers.get("content-type") || "text/html";
     const isHtml = contentType.includes("text/html");
+    const isCss = contentType.includes("text/css");
 
     // Build safe response headers (strip frame-blocking headers)
     const responseHeaders = new Headers();
@@ -122,6 +127,16 @@ export async function GET(req: NextRequest) {
 
       responseHeaders.set("content-type", "text/html; charset=utf-8");
       return new NextResponse(html, {
+        status: response.status,
+        headers: responseHeaders,
+      });
+    }
+
+    if (isCss) {
+      const css = await response.text();
+      const rewrittenCss = rewriteCssUrls(css, targetUrl);
+      responseHeaders.set("content-type", "text/css; charset=utf-8");
+      return new NextResponse(rewrittenCss, {
         status: response.status,
         headers: responseHeaders,
       });
@@ -171,5 +186,39 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
     }
   );
 
+  // Rewrite root-relative URLs (e.g. /wp-content/...) to proxied absolute URLs.
+  // <base> does not affect root-relative paths, so without this they incorrectly
+  // resolve to our own origin and 404.
+  html = html.replace(
+    /((?:src|href|action)=["'])(\/(?!\/)[^"']*)(["'])/gi,
+    (match, prefix, rootRelativePath, suffix) => {
+      try {
+        const absUrl = `${baseUrl.origin}${rootRelativePath}`;
+        return `${prefix}/api/proxy?url=${encodeURIComponent(absUrl)}${suffix}`;
+      } catch {
+        return match;
+      }
+    }
+  );
+
   return html;
+}
+
+/**
+ * Rewrite CSS url(...) entries through our proxy so fonts/images from external
+ * origins don't get blocked by browser CORS when loaded from our origin.
+ */
+function rewriteCssUrls(css: string, baseUrl: URL): string {
+  return css.replace(/url\(([^)]+)\)/gi, (full, rawInner) => {
+    const inner = String(rawInner).trim().replace(/^['"]|['"]$/g, "");
+    if (!inner || inner.startsWith("data:") || inner.startsWith("blob:")) {
+      return full;
+    }
+    try {
+      const resolved = new URL(inner, `${baseUrl.origin}${baseUrl.pathname}`).toString();
+      return `url("/api/proxy?url=${encodeURIComponent(resolved)}")`;
+    } catch {
+      return full;
+    }
+  });
 }
