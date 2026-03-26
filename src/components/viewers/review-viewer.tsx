@@ -635,15 +635,17 @@ export function ReviewViewer({
                     captureIframeViewport(
                       iframe,
                       { x: annotationForContext.x, y: annotationForContext.y },
-                      { allowHeavyFallback: false }
+                      // Safe here: this runs asynchronously after comment submit,
+                      // so we can allow the heavier fallback to improve accuracy.
+                      { allowHeavyFallback: true }
                     ),
-                    9000
+                    16000
                   );
                   if (dataUrl) {
                     const shotRes = await postJsonWithTimeout(
                       "/api/screenshot",
                       { imageBase64: dataUrl, contextOnly: true },
-                      9000
+                      10000
                     );
                     if (shotRes?.ok) {
                       const data = await shotRes.json();
@@ -658,7 +660,7 @@ export function ReviewViewer({
                   const shotRes = await postJsonWithTimeout(
                     "/api/screenshot",
                     { url: effectiveSourceUrl, contextOnly: true },
-                    10000
+                    12000
                   );
                   if (shotRes?.ok) {
                     const data = await shotRes.json();
