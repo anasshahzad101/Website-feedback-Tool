@@ -3,6 +3,78 @@ import { auth } from "@/lib/auth";
 import { db, UserRole, ProjectRole, ActivityActionType } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
 
+// PATCH /api/annotations/[id] - Update lightweight annotation fields
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const session = await auth();
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = (await request.json().catch(() => ({}))) as {
+      screenshotContextPath?: string | null;
+    };
+    if (!("screenshotContextPath" in body)) {
+      return NextResponse.json(
+        { error: "screenshotContextPath is required" },
+        { status: 400 }
+      );
+    }
+
+    const annotation = await db.annotation.findUnique({
+      where: { id },
+      include: {
+        reviewItem: {
+          include: {
+            project: { include: { members: true } },
+          },
+        },
+      },
+    });
+    if (!annotation) {
+      return NextResponse.json({ error: "Annotation not found" }, { status: 404 });
+    }
+
+    const userMembership = annotation.reviewItem.project.members.find(
+      (m) => m.userId === session.user.id
+    );
+    const isOwner = annotation.createdByUserId === session.user.id;
+    const canEdit =
+      isOwner ||
+      Permissions.canAccessAdminPanel(session.user.role as UserRole) ||
+      (userMembership &&
+        Permissions.canEditProject(
+          session.user.role as UserRole,
+          userMembership.roleInProject as ProjectRole,
+          false
+        ));
+    if (!canEdit) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const screenshotContextPath =
+      typeof body.screenshotContextPath === "string"
+        ? body.screenshotContextPath.trim() || null
+        : null;
+
+    const updated = await db.annotation.update({
+      where: { id },
+      data: { screenshotContextPath },
+    });
+    return NextResponse.json({ annotation: updated });
+  } catch (error) {
+    console.error("Error updating annotation:", error);
+    return NextResponse.json(
+      { error: "Failed to update annotation" },
+      { status: 500 }
+    );
+  }
+}
+
 // DELETE /api/annotations/[id]
 export async function DELETE(
   _request: NextRequest,

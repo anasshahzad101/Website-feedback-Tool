@@ -75,6 +75,27 @@ async function postJsonWithTimeout(
   }
 }
 
+async function patchJsonWithTimeout(
+  url: string,
+  body: unknown,
+  timeoutMs: number
+): Promise<Response | null> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type { Annotation };
 
 export interface CommentThread {
@@ -514,117 +535,11 @@ export function ReviewViewer({
     if (pendingAnnotation) setSavingAnnotation(true);
     try {
       let annotationId = pendingAnnotationId;
+      const annotationForContext = pendingAnnotation
+        ? { ...pendingAnnotation }
+        : null;
       // If we have a pending (unsaved) pin, save it first, then create the comment.
       if (pendingAnnotation) {
-        let screenshotContextPath: string | undefined;
-
-        // Website: save what the user actually saw (viewport or crop around pin), not a remote "top of page" grab.
-        if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
-          try {
-            let dataUrl: string | null = null;
-            const root = contentRef.current;
-
-            if (websiteViewMode === "live") {
-              const iframe = root?.querySelector("iframe");
-              if (iframe) {
-                // Keep comment submit snappy on heavy pages: strict timeout and no heavy fallback.
-                dataUrl = await withTimeout(
-                  captureIframeViewport(
-                    iframe,
-                    { x: pendingAnnotation.x, y: pendingAnnotation.y },
-                    { allowHeavyFallback: false }
-                  ),
-                  8000
-                );
-              }
-            } else {
-              const img = root?.querySelector(
-                'img[alt="Website screenshot"]'
-              ) as HTMLImageElement | null;
-              if (img) {
-                if (!img.complete) {
-                  await new Promise<void>((resolve) => {
-                    img.onload = () => resolve();
-                    img.onerror = () => resolve();
-                  });
-                }
-                dataUrl = captureImageAroundPin(
-                  img,
-                  pendingAnnotation.xPercent,
-                  pendingAnnotation.yPercent
-                );
-              }
-            }
-
-            if (dataUrl != null) {
-              const shotRes = await postJsonWithTimeout(
-                "/api/screenshot",
-                { imageBase64: dataUrl, contextOnly: true },
-                8000
-              );
-              if (shotRes?.ok) {
-                const data = await shotRes.json();
-                screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
-              } else {
-                const d = await shotRes?.json().catch(() => ({}));
-                console.error("Screenshot context save failed or timed out:", d);
-              }
-            } else if (websiteViewMode !== "live") {
-              // Screenshot mode: optional remote fallback if image crop failed
-              const shotRes = await postJsonWithTimeout(
-                "/api/screenshot",
-                { url: effectiveSourceUrl, contextOnly: true },
-                9000
-              );
-              if (shotRes?.ok) {
-                const data = await shotRes.json();
-                screenshotContextPath = (data as { screenshotPath?: string }).screenshotPath;
-              }
-            }
-            // Live mode: never use Microlink for context — it is always the top of the page.
-          } catch (err) {
-            console.error("Screenshot context error:", err);
-          }
-        } else if (reviewItem.type === "IMAGE" && effectiveFilePath) {
-          // Static image reviews: capture was only implemented for websites before.
-          try {
-            const root = contentRef.current;
-            const img = root?.querySelector(
-              'img[alt="Review image"]'
-            ) as HTMLImageElement | null;
-            if (img) {
-              if (!img.complete) {
-                await new Promise<void>((resolve) => {
-                  img.onload = () => resolve();
-                  img.onerror = () => resolve();
-                });
-              }
-              const dataUrl = captureImageAroundPin(
-                img,
-                pendingAnnotation.xPercent,
-                pendingAnnotation.yPercent
-              );
-              if (dataUrl != null) {
-                const shotRes = await postJsonWithTimeout(
-                  "/api/screenshot",
-                  { imageBase64: dataUrl, contextOnly: true },
-                  8000
-                );
-                if (shotRes?.ok) {
-                  const data = await shotRes.json();
-                  screenshotContextPath = (data as { screenshotPath?: string })
-                    .screenshotPath;
-                } else {
-                  const d = await shotRes?.json().catch(() => ({}));
-                  console.error("Image context save failed or timed out:", d);
-                }
-              }
-            }
-          } catch (err) {
-            console.error("Image context capture error:", err);
-          }
-        }
-
         const res = await fetch("/api/annotations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -636,7 +551,6 @@ export function ReviewViewer({
             y: pendingAnnotation.y,
             xPercent: pendingAnnotation.xPercent,
             yPercent: pendingAnnotation.yPercent,
-            screenshotContextPath,
             color: pendingAnnotation.color,
           }),
         });
@@ -704,6 +618,96 @@ export function ReviewViewer({
       clearComposeStaged();
       setSelectedAnnotationId(null);
       toast.success("Comment posted");
+
+      // Save screenshot context in background so UI never blocks on heavy pages.
+      if (annotationId && annotationForContext) {
+        void (async () => {
+          try {
+            let screenshotContextPath: string | undefined;
+
+            if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
+              if (websiteViewMode === "live") {
+                // Live pages can freeze with DOM capture; use remote fallback here.
+                const shotRes = await postJsonWithTimeout(
+                  "/api/screenshot",
+                  { url: effectiveSourceUrl, contextOnly: true },
+                  10000
+                );
+                if (shotRes?.ok) {
+                  const data = await shotRes.json();
+                  screenshotContextPath = (data as { screenshotPath?: string })
+                    .screenshotPath;
+                }
+              } else {
+                const root = contentRef.current;
+                const img = root?.querySelector(
+                  'img[alt="Website screenshot"]'
+                ) as HTMLImageElement | null;
+                if (img) {
+                  const dataUrl = captureImageAroundPin(
+                    img,
+                    annotationForContext.xPercent,
+                    annotationForContext.yPercent
+                  );
+                  if (dataUrl) {
+                    const shotRes = await postJsonWithTimeout(
+                      "/api/screenshot",
+                      { imageBase64: dataUrl, contextOnly: true },
+                      9000
+                    );
+                    if (shotRes?.ok) {
+                      const data = await shotRes.json();
+                      screenshotContextPath = (data as { screenshotPath?: string })
+                        .screenshotPath;
+                    }
+                  }
+                }
+              }
+            } else if (reviewItem.type === "IMAGE" && effectiveFilePath) {
+              const root = contentRef.current;
+              const img = root?.querySelector(
+                'img[alt="Review image"]'
+              ) as HTMLImageElement | null;
+              if (img) {
+                const dataUrl = captureImageAroundPin(
+                  img,
+                  annotationForContext.xPercent,
+                  annotationForContext.yPercent
+                );
+                if (dataUrl) {
+                  const shotRes = await postJsonWithTimeout(
+                    "/api/screenshot",
+                    { imageBase64: dataUrl, contextOnly: true },
+                    9000
+                  );
+                  if (shotRes?.ok) {
+                    const data = await shotRes.json();
+                    screenshotContextPath = (data as { screenshotPath?: string })
+                      .screenshotPath;
+                  }
+                }
+              }
+            }
+
+            if (screenshotContextPath) {
+              const patchRes = await patchJsonWithTimeout(
+                `/api/annotations/${annotationId}`,
+                { screenshotContextPath },
+                8000
+              );
+              if (patchRes?.ok) {
+                setAnnotations((prev) =>
+                  prev.map((a) =>
+                    a.id === annotationId ? { ...a, screenshotContextPath } : a
+                  )
+                );
+              }
+            }
+          } catch (e) {
+            console.error("Background context screenshot failed:", e);
+          }
+        })();
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to submit comment");
     } finally {
@@ -723,6 +727,7 @@ export function ReviewViewer({
     effectiveSourceUrl,
     effectiveFilePath,
     websiteViewMode,
+    annotations,
   ]);
 
   const handleCancelPending = useCallback(() => {
