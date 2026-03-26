@@ -627,16 +627,30 @@ export function ReviewViewer({
 
             if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
               if (websiteViewMode === "live") {
-                // Live pages can freeze with DOM capture; use remote fallback here.
-                const shotRes = await postJsonWithTimeout(
-                  "/api/screenshot",
-                  { url: effectiveSourceUrl, contextOnly: true },
-                  10000
-                );
-                if (shotRes?.ok) {
-                  const data = await shotRes.json();
-                  screenshotContextPath = (data as { screenshotPath?: string })
-                    .screenshotPath;
+                // Capture the viewport around the placed pin (not top-of-page remote shot).
+                const root = contentRef.current;
+                const iframe = root?.querySelector("iframe");
+                if (iframe) {
+                  const dataUrl = await withTimeout(
+                    captureIframeViewport(
+                      iframe,
+                      { x: annotationForContext.x, y: annotationForContext.y },
+                      { allowHeavyFallback: false }
+                    ),
+                    9000
+                  );
+                  if (dataUrl) {
+                    const shotRes = await postJsonWithTimeout(
+                      "/api/screenshot",
+                      { imageBase64: dataUrl, contextOnly: true },
+                      9000
+                    );
+                    if (shotRes?.ok) {
+                      const data = await shotRes.json();
+                      screenshotContextPath = (data as { screenshotPath?: string })
+                        .screenshotPath;
+                    }
+                  }
                 }
               } else {
                 const root = contentRef.current;
