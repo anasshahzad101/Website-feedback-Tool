@@ -102,12 +102,51 @@ function resolveViewportTarget(
 }
 
 export type ViewportPinFocus = { x: number; y: number };
+
+/** Snapshot from `freezeIframeViewport` — pass into `captureIframeViewport` so async capture matches submit-time scroll. */
+export type FrozenIframeViewport = ViewportTarget;
+
 export type CaptureIframeViewportOptions = {
   /** Avoid very heavy html2canvas fallback on large/complex pages. */
   allowHeavyFallback?: boolean;
   /** Prefer viewport-accurate crop path over faster clone-based capture. */
   preferAccuracy?: boolean;
+  /** Use scroll/viewport from submit time instead of reading live scroll when capture runs later. */
+  frozen?: FrozenIframeViewport | null;
 };
+
+/**
+ * Call synchronously before any `await` on comment submit so later async capture
+ * still crops to the viewport the user had when they clicked send.
+ */
+export function freezeIframeViewport(
+  iframe: HTMLIFrameElement
+): FrozenIframeViewport | null {
+  const doc = iframe.contentDocument;
+  const win = iframe.contentWindow;
+  if (!doc?.body || !win) return null;
+  try {
+    return resolveViewportTarget(doc, win, iframe);
+  } catch {
+    return null;
+  }
+}
+
+function viewportForCapture(
+  doc: Document,
+  win: Window,
+  iframe: HTMLIFrameElement,
+  frozen: FrozenIframeViewport | null | undefined
+): ViewportTarget {
+  if (
+    frozen?.el &&
+    frozen.el.isConnected &&
+    frozen.el.ownerDocument === doc
+  ) {
+    return frozen;
+  }
+  return resolveViewportTarget(doc, win, iframe);
+}
 
 /** Tighter crop around the pin (CSS px in the iframe / annotation layer). */
 async function focusCropAroundPin(
@@ -268,7 +307,7 @@ export async function captureIframeViewport(
   if (!doc?.body || !win) return null;
 
   try {
-    const vt = resolveViewportTarget(doc, win, iframe);
+    const vt = viewportForCapture(doc, win, iframe, options?.frozen);
 
     let dataUrl: string | null = null;
     const canHeavy = options?.allowHeavyFallback === true;

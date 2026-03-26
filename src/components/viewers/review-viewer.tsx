@@ -42,6 +42,7 @@ import {
 import {
   captureIframeViewport,
   captureImageAroundPin,
+  freezeIframeViewport,
 } from "@/lib/capture-annotation-context";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -531,6 +532,22 @@ export function ReviewViewer({
   const handleSubmitComment = useCallback(async () => {
     if (!newComment.trim() && composeStaged.length === 0) return;
     if (!pendingAnnotation && !pendingAnnotationId) return;
+
+    // Freeze iframe scroll/viewport before any await — async capture runs after
+    // submit and would otherwise read a reset (e.g. top-of-page) scroll.
+    let frozenWebsiteViewport: ReturnType<typeof freezeIframeViewport> = null;
+    if (
+      pendingAnnotation &&
+      reviewItem.type === "WEBSITE" &&
+      websiteViewMode === "live" &&
+      effectiveSourceUrl
+    ) {
+      const iframe = contentRef.current?.querySelector("iframe");
+      if (iframe) {
+        frozenWebsiteViewport = freezeIframeViewport(iframe);
+      }
+    }
+
     setSubmittingComment(true);
     if (pendingAnnotation) setSavingAnnotation(true);
     try {
@@ -635,9 +652,11 @@ export function ReviewViewer({
                     captureIframeViewport(
                       iframe,
                       { x: annotationForContext.x, y: annotationForContext.y },
-                      // Safe here: this runs asynchronously after comment submit,
-                      // so we can allow the heavier fallback to improve accuracy.
-                      { allowHeavyFallback: true, preferAccuracy: true }
+                      {
+                        allowHeavyFallback: true,
+                        preferAccuracy: true,
+                        frozen: frozenWebsiteViewport,
+                      }
                     ),
                     16000
                   );
