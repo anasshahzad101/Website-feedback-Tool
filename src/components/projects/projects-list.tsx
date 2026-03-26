@@ -10,42 +10,20 @@ import { Button } from "@/components/ui/button";
 import { FileText, Archive, Trash2, MoreHorizontal, Globe, ImageIcon, FileText as PdfIcon, Video } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDate } from "@/lib/utils";
-import { ProjectStatus } from "@prisma/client";
 import { toast } from "sonner";
+import type { SerializedProjectForList } from "@/lib/projects/serialize-project-list";
 
 type ReviewItemType = "WEBSITE" | "IMAGE" | "PDF" | "VIDEO";
 
-interface PreviewItem {
-  type: ReviewItemType;
-  thumbnailPath: string | null;
-  uploadedFilePath: string | null;
-  sourceUrl: string | null;
-  currentRevision: {
-    snapshotPath: string | null;
-    uploadedFilePath: string | null;
-  } | null;
-}
-
-interface Project {
-  id: string;
-  name: string;
-  slug: string;
-  description: string | null;
-  status: ProjectStatus;
-  createdAt: Date;
-  updatedAt: Date;
-  client: { id: string; name: string; companyName: string | null };
-  _count: { reviewItems: number; members: number };
-  reviewItems?: PreviewItem[];
-}
-
 interface ProjectsListProps {
-  projects: Project[];
+  projects: SerializedProjectForList[];
   isArchived?: boolean;
 }
 
 /** Resolve image URL for card preview. Paths in DB are like /screenshots/x or /images/x; we serve at /uploads + path. */
-function getPreviewImageUrl(item: PreviewItem | undefined): string | null {
+function getPreviewImageUrl(
+  item: SerializedProjectForList["reviewItems"][0] | undefined
+): string | null {
   if (!item) return null;
   const path =
     item.thumbnailPath ||
@@ -118,7 +96,7 @@ export function ProjectsList({ projects: initial, isArchived }: ProjectsListProp
         const previewItem = project.reviewItems?.[0];
         const previewUrl = getPreviewImageUrl(previewItem);
         const previewType = (previewItem?.type ?? "WEBSITE") as ReviewItemType;
-        const TypeIcon = typeIcons[previewType];
+        const TypeIcon = typeIcons[previewType] ?? Globe;
 
         return (
           <div key={project.id} className="relative group">

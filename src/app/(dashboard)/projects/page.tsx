@@ -8,6 +8,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { ProjectsList } from "@/components/projects/projects-list";
 import { Plus } from "lucide-react";
+import { serializeProjectsForList } from "@/lib/projects/serialize-project-list";
+
+function parseStatusQueryParam(raw: string | undefined): ProjectStatus | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const u = raw.trim().toUpperCase();
+  if (u === ProjectStatus.ACTIVE || u === ProjectStatus.ARCHIVED) return u;
+  return undefined;
+}
+
+function coerceSessionRole(role: string | undefined): UserRole {
+  const values = Object.values(UserRole) as string[];
+  if (role && values.includes(role)) return role as UserRole;
+  return UserRole.REVIEWER;
+}
 
 export default async function ProjectsPage({
   searchParams,
@@ -20,11 +34,12 @@ export default async function ProjectsPage({
     redirect("/login");
   }
 
-  const statusFilter = statusParam as ProjectStatus | undefined;
+  const userRole = coerceSessionRole(session.user.role);
+  const statusFilter = parseStatusQueryParam(statusParam);
 
   const baseWhere: Prisma.ProjectWhereInput = {
     ...(statusFilter ? { status: statusFilter } : {}),
-    ...(!Permissions.canAccessAdminPanel(session.user.role as UserRole)
+    ...(!Permissions.canAccessAdminPanel(userRole)
       ? { members: { some: { userId: session.user.id } } }
       : {}),
   };
@@ -61,7 +76,7 @@ export default async function ProjectsPage({
       orderBy: { updatedAt: "desc" },
       include: projectInclude,
     }),
-    Permissions.canAccessAdminPanel(session.user.role as UserRole)
+    Permissions.canAccessAdminPanel(userRole)
       ? db.project.findMany({
           where: { status: ProjectStatus.ARCHIVED },
           orderBy: { archivedAt: "desc" },
@@ -69,6 +84,9 @@ export default async function ProjectsPage({
         })
       : Promise.resolve([]),
   ]);
+
+  const activeSerialized = serializeProjectsForList(activeProjects);
+  const archivedSerialized = serializeProjectsForList(archivedProjects);
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
@@ -81,7 +99,7 @@ export default async function ProjectsPage({
             Manage your projects and client reviews
           </p>
         </div>
-        {Permissions.canCreateProject(session.user.role as UserRole) && (
+        {Permissions.canCreateProject(userRole) && (
           <Button asChild className="shrink-0">
             <Link href="/projects/new">
               <Plus className="mr-2 h-4 w-4" />
@@ -111,7 +129,7 @@ export default async function ProjectsPage({
               </CardTitle>
             </CardHeader>
             <CardContent className="p-6">
-              <ProjectsList projects={activeProjects} />
+              <ProjectsList projects={activeSerialized} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -125,7 +143,7 @@ export default async function ProjectsPage({
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-6">
-                <ProjectsList projects={archivedProjects} isArchived />
+                <ProjectsList projects={archivedSerialized} isArchived />
               </CardContent>
             </Card>
           </TabsContent>
