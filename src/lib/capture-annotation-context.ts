@@ -105,6 +105,8 @@ export type ViewportPinFocus = { x: number; y: number };
 export type CaptureIframeViewportOptions = {
   /** Avoid very heavy html2canvas fallback on large/complex pages. */
   allowHeavyFallback?: boolean;
+  /** Prefer viewport-accurate crop path over faster clone-based capture. */
+  preferAccuracy?: boolean;
 };
 
 /** Tighter crop around the pin (CSS px in the iframe / annotation layer). */
@@ -268,8 +270,12 @@ export async function captureIframeViewport(
   try {
     const vt = resolveViewportTarget(doc, win, iframe);
 
-    let dataUrl = await captureWithModernScreenshot(doc, vt);
-    if (!dataUrl && options?.allowHeavyFallback) {
+    let dataUrl: string | null = null;
+    const canHeavy = options?.allowHeavyFallback === true;
+    const preferAccuracy = options?.preferAccuracy === true;
+
+    if (preferAccuracy && canHeavy) {
+      // Accuracy path first: captures from the current scroll position.
       dataUrl = await renderFullAndCropViewport(
         vt.el,
         vt.scrollLeft,
@@ -277,6 +283,22 @@ export async function captureIframeViewport(
         vt.viewW,
         vt.viewH
       );
+      // If this fails, still try the faster clone-based path.
+      if (!dataUrl) {
+        dataUrl = await captureWithModernScreenshot(doc, vt);
+      }
+    } else {
+      // Default path: fast first, heavy fallback optional.
+      dataUrl = await captureWithModernScreenshot(doc, vt);
+      if (!dataUrl && canHeavy) {
+        dataUrl = await renderFullAndCropViewport(
+          vt.el,
+          vt.scrollLeft,
+          vt.scrollTop,
+          vt.viewW,
+          vt.viewH
+        );
+      }
     }
     if (!dataUrl) return null;
 

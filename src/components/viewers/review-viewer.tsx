@@ -637,7 +637,7 @@ export function ReviewViewer({
                       { x: annotationForContext.x, y: annotationForContext.y },
                       // Safe here: this runs asynchronously after comment submit,
                       // so we can allow the heavier fallback to improve accuracy.
-                      { allowHeavyFallback: true }
+                      { allowHeavyFallback: true, preferAccuracy: true }
                     ),
                     16000
                   );
