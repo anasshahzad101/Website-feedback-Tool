@@ -34,14 +34,18 @@ function resolveViewportTarget(
 
   const rootSL = se.scrollLeft;
   const rootST = se.scrollTop;
-  const rootScrolls = rootST > 0 || rootSL > 0;
+  const winX = Math.round(win.scrollX || 0);
+  const winY = Math.round(win.scrollY || 0);
+  // Some documents keep scroll on window while scrollingElement reads 0 (or vice versa).
+  const rootScrolls =
+    rootST > 0 || rootSL > 0 || winY > 0 || winX > 0;
 
   if (rootScrolls) {
     return {
       kind: "root",
       el: se,
-      scrollLeft: rootSL,
-      scrollTop: rootST,
+      scrollLeft: Math.max(rootSL, winX),
+      scrollTop: Math.max(rootST, winY),
       viewW,
       viewH,
     };
@@ -356,12 +360,17 @@ export async function captureIframeViewport(
     if (!dataUrl) return null;
 
     if (pin) {
+      // Pins are placed using coordinates in the parent layout box that matches the
+      // iframe element size — not necessarily vt.viewW/H when scroll lives on an inner
+      // div (smaller client rect). Scale crop to the iframe box so the pin stays centered.
+      const pinViewW = Math.max(1, Math.round(iframe.clientWidth || vt.viewW));
+      const pinViewH = Math.max(1, Math.round(iframe.clientHeight || vt.viewH));
       dataUrl = await focusCropAroundPin(
         dataUrl,
         pin.x,
         pin.y,
-        vt.viewW,
-        vt.viewH
+        pinViewW,
+        pinViewH
       );
     }
 

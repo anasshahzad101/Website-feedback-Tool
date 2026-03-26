@@ -281,6 +281,11 @@ export function ReviewViewer({
   const [commentSearchQuery, setCommentSearchQuery] = useState("");
   const [resolvedCommentsExpanded, setResolvedCommentsExpanded] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  /** Live website: viewport capture started when the pin is placed; await on submit. */
+  const liveContextInFlightRef = useRef<{
+    pinClientId: string;
+    promise: Promise<string | null>;
+  } | null>(null);
 
   const displayRevision = selectedRevisionId
     ? revisions.find((r) => r.id === selectedRevisionId) ?? currentRevision
@@ -510,13 +515,51 @@ export function ReviewViewer({
     [reviewItem.id, user.role]
   );
 
-  const handleAnnotationCreated = useCallback((annotation: NewAnnotation) => {
-    // Show pin only in UI; it is saved when the user submits a comment. Replacing any previous pending pin.
-    setPendingAnnotation(annotation);
-    setPendingAnnotationId(annotation.id);
-    setNewComment("");
-    setSelectedAnnotationId(annotation.id);
-  }, []);
+  const handleAnnotationCreated = useCallback(
+    (annotation: NewAnnotation) => {
+      // Show pin only in UI; it is saved when the user submits a comment. Replacing any previous pending pin.
+      setPendingAnnotation(annotation);
+      setPendingAnnotationId(annotation.id);
+      setNewComment("");
+      setSelectedAnnotationId(annotation.id);
+
+      // Capture iframe context as soon as the pin is dropped — same scroll/viewport as the click.
+      // Waiting until after comment submit often loses scroll or fails silently; we await this on submit.
+      liveContextInFlightRef.current = null;
+      if (
+        reviewItem.type === "WEBSITE" &&
+        websiteViewMode === "live" &&
+        effectiveSourceUrl
+      ) {
+        const pinId = annotation.id;
+        const pinFocus = { x: annotation.x, y: annotation.y };
+        const promise = new Promise<string | null>((resolve) => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(async () => {
+              try {
+                const iframe = contentRef.current?.querySelector("iframe");
+                if (!iframe?.contentDocument?.body) {
+                  resolve(null);
+                  return;
+                }
+                const frozen = freezeIframeViewport(iframe);
+                const url = await captureIframeViewport(iframe, pinFocus, {
+                  allowHeavyFallback: true,
+                  preferAccuracy: true,
+                  frozen,
+                });
+                resolve(url);
+              } catch {
+                resolve(null);
+              }
+            });
+          });
+        });
+        liveContextInFlightRef.current = { pinClientId: pinId, promise };
+      }
+    },
+    [reviewItem.type, websiteViewMode, effectiveSourceUrl]
+  );
 
   const handleAnnotationSelected = useCallback(
     (annotationId: string | null) => {
@@ -524,6 +567,7 @@ export function ReviewViewer({
       if (annotationId && annotationId !== pendingAnnotationId) {
         setPendingAnnotation(null);
         setPendingAnnotationId(null);
+        liveContextInFlightRef.current = null;
       }
     },
     [pendingAnnotationId]
@@ -648,23 +692,34 @@ export function ReviewViewer({
                 const root = contentRef.current;
                 const iframe = root?.querySelector("iframe");
                 if (iframe) {
-                  const dataUrl = await withTimeout(
-                    captureIframeViewport(
-                      iframe,
-                      { x: annotationForContext.x, y: annotationForContext.y },
-                      {
-                        allowHeavyFallback: true,
-                        preferAccuracy: true,
-                        frozen: frozenWebsiteViewport,
-                      }
-                    ),
-                    25000
-                  );
+                  let dataUrl: string | null = null;
+                  const inFlight = liveContextInFlightRef.current;
+                  if (inFlight?.pinClientId === annotationForContext.id) {
+                    dataUrl = await withTimeout(inFlight.promise, 35000);
+                  }
+                  liveContextInFlightRef.current = null;
+                  if (!dataUrl) {
+                    dataUrl = await withTimeout(
+                      captureIframeViewport(
+                        iframe,
+                        {
+                          x: annotationForContext.x,
+                          y: annotationForContext.y,
+                        },
+                        {
+                          allowHeavyFallback: true,
+                          preferAccuracy: true,
+                          frozen: frozenWebsiteViewport,
+                        }
+                      ),
+                      25000
+                    );
+                  }
                   if (dataUrl) {
                     const shotRes = await postJsonWithTimeout(
                       "/api/screenshot",
                       { imageBase64: dataUrl, contextOnly: true },
-                      10000
+                      20000
                     );
                     if (shotRes?.ok) {
                       const data = await shotRes.json();
@@ -775,6 +830,7 @@ export function ReviewViewer({
     // Pin was not saved yet; just remove it from UI. No API call.
     setPendingAnnotation(null);
     setPendingAnnotationId(null);
+    liveContextInFlightRef.current = null;
     setSelectedAnnotationId(null);
     setNewComment("");
     clearComposeStaged();
