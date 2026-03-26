@@ -10,6 +10,12 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
   "transfer-encoding",
 ]);
 
+const NO_STORE_PREVIEW_HEADERS: Record<string, string> = {
+  "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  pragma: "no-cache",
+  expires: "0",
+};
+
 // Headers we should not forward from the original request
 const BLOCKED_REQUEST_HEADERS = new Set([
   "host",
@@ -124,8 +130,12 @@ export async function GET(req: NextRequest) {
       // Rewrite resource URLs (images, scripts, stylesheets) to go through proxy
       // This handles absolute URLs to other origins that might have CSP issues
       html = rewriteResourceUrls(html, targetUrl);
+      html = injectRuntimeRewriter(html, targetUrl);
 
       responseHeaders.set("content-type", "text/html; charset=utf-8");
+      for (const [k, v] of Object.entries(NO_STORE_PREVIEW_HEADERS)) {
+        responseHeaders.set(k, v);
+      }
       return new NextResponse(html, {
         status: response.status,
         headers: responseHeaders,
@@ -136,6 +146,9 @@ export async function GET(req: NextRequest) {
       const css = await response.text();
       const rewrittenCss = rewriteCssUrls(css, targetUrl);
       responseHeaders.set("content-type", "text/css; charset=utf-8");
+      for (const [k, v] of Object.entries(NO_STORE_PREVIEW_HEADERS)) {
+        responseHeaders.set(k, v);
+      }
       return new NextResponse(rewrittenCss, {
         status: response.status,
         headers: responseHeaders,
@@ -186,6 +199,23 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
     }
   );
 
+  // Rewrite srcset entries (absolute URLs)
+  html = html.replace(/(srcset=["'])([^"']+)(["'])/gi, (match, prefix, value, suffix) => {
+    const rewritten = String(value)
+      .split(",")
+      .map((part) => {
+        const trimmed = part.trim();
+        if (!trimmed) return trimmed;
+        const bits = trimmed.split(/\s+/);
+        const candidate = bits[0] ?? "";
+        if (!/^https?:\/\//i.test(candidate)) return trimmed;
+        const proxied = `/api/proxy?url=${encodeURIComponent(candidate)}`;
+        return [proxied, ...bits.slice(1)].join(" ");
+      })
+      .join(", ");
+    return `${prefix}${rewritten}${suffix}`;
+  });
+
   // Rewrite root-relative URLs (e.g. /wp-content/...) to proxied absolute URLs.
   // <base> does not affect root-relative paths, so without this they incorrectly
   // resolve to our own origin and 404.
@@ -201,6 +231,24 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
     }
   );
 
+  // Rewrite srcset entries (root-relative URLs)
+  html = html.replace(/(srcset=["'])([^"']+)(["'])/gi, (match, prefix, value, suffix) => {
+    const rewritten = String(value)
+      .split(",")
+      .map((part) => {
+        const trimmed = part.trim();
+        if (!trimmed) return trimmed;
+        const bits = trimmed.split(/\s+/);
+        const candidate = bits[0] ?? "";
+        if (!candidate.startsWith("/") || candidate.startsWith("//")) return trimmed;
+        const absUrl = `${baseUrl.origin}${candidate}`;
+        const proxied = `/api/proxy?url=${encodeURIComponent(absUrl)}`;
+        return [proxied, ...bits.slice(1)].join(" ");
+      })
+      .join(", ");
+    return `${prefix}${rewritten}${suffix}`;
+  });
+
   return html;
 }
 
@@ -209,7 +257,7 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
  * origins don't get blocked by browser CORS when loaded from our origin.
  */
 function rewriteCssUrls(css: string, baseUrl: URL): string {
-  return css.replace(/url\(([^)]+)\)/gi, (full, rawInner) => {
+  let out = css.replace(/url\(([^)]+)\)/gi, (full, rawInner) => {
     const inner = String(rawInner).trim().replace(/^['"]|['"]$/g, "");
     if (!inner || inner.startsWith("data:") || inner.startsWith("blob:")) {
       return full;
@@ -221,4 +269,41 @@ function rewriteCssUrls(css: string, baseUrl: URL): string {
       return full;
     }
   });
+  // Also rewrite @import "..." and @import url(...) forms.
+  out = out.replace(/@import\s+(?:url\()?['"]?([^'")\s]+)['"]?\)?/gi, (full, rawImport) => {
+    const inner = String(rawImport).trim();
+    if (!inner || inner.startsWith("data:") || inner.startsWith("blob:")) return full;
+    try {
+      const resolved = new URL(inner, `${baseUrl.origin}${baseUrl.pathname}`).toString();
+      return `@import url("/api/proxy?url=${encodeURIComponent(resolved)}")`;
+    } catch {
+      return full;
+    }
+  });
+  return out;
+}
+
+function injectRuntimeRewriter(html: string, baseUrl: URL): string {
+  const script = `<script>(function(){try{
+const ORIGIN=${JSON.stringify(baseUrl.origin)};
+const PROXY_PREFIX="/api/proxy?url=";
+const toAbs=(u)=>{if(!u)return null;const s=String(u).trim();if(!s||s.startsWith("data:")||s.startsWith("blob:")||s.startsWith("javascript:"))return null;try{return new URL(s,ORIGIN+"/").toString();}catch{return null;}};
+const toProxy=(u)=>{const abs=toAbs(u);return abs?PROXY_PREFIX+encodeURIComponent(abs):u;};
+const attrs=["src","href","action","poster","data-src","data-href","data-bg","data-background"];
+const fixEl=(el)=>{if(!el||!el.getAttribute)return;
+for(const a of attrs){const v=el.getAttribute(a);if(!v)continue;const p=toProxy(v);if(p&&p!==v)el.setAttribute(a,p);}
+const ss=el.getAttribute("srcset");if(ss){const next=ss.split(",").map(part=>{const t=part.trim();if(!t)return t;const bits=t.split(/\\s+/);const p=toProxy(bits[0]);return [p,...bits.slice(1)].join(" ");}).join(", ");if(next!==ss)el.setAttribute("srcset",next);}
+if(el.tagName==="STYLE"&&el.textContent){el.textContent=el.textContent.replace(/url\\(([^)]+)\\)/gi,(m,inner)=>{const raw=String(inner).trim().replace(/^['"]|['"]$/g,"");const p=toProxy(raw);return p?('url("'+p+'")'):m;});}
+};
+document.querySelectorAll("*").forEach(fixEl);
+const obs=new MutationObserver((mut)=>{for(const m of mut){if(m.type==="attributes"){fixEl(m.target);}if(m.addedNodes){m.addedNodes.forEach((n)=>{if(n&&n.nodeType===1){fixEl(n);n.querySelectorAll&&n.querySelectorAll("*").forEach(fixEl);}});}}});
+obs.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:["src","href","action","poster","srcset","data-src","data-href","data-bg","data-background"]});
+}catch(e){console.warn("proxy runtime rewrite failed",e);}})();</script>`;
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, `${script}</head>`);
+  }
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/(<body[^>]*>)/i, `$1${script}`);
+  }
+  return `${script}${html}`;
 }
