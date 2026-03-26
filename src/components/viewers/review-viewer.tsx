@@ -652,6 +652,20 @@ export function ReviewViewer({
                     }
                   }
                 }
+                // Safety fallback: if live viewport capture fails, use remote capture
+                // so a context image is still attached instead of nothing.
+                if (!screenshotContextPath) {
+                  const shotRes = await postJsonWithTimeout(
+                    "/api/screenshot",
+                    { url: effectiveSourceUrl, contextOnly: true },
+                    10000
+                  );
+                  if (shotRes?.ok) {
+                    const data = await shotRes.json();
+                    screenshotContextPath = (data as { screenshotPath?: string })
+                      .screenshotPath;
+                  }
+                }
               } else {
                 const root = contentRef.current;
                 const img = root?.querySelector(
@@ -715,6 +729,8 @@ export function ReviewViewer({
                     a.id === annotationId ? { ...a, screenshotContextPath } : a
                   )
                 );
+              } else {
+                console.error("Annotation context PATCH failed");
               }
             }
           } catch (e) {
