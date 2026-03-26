@@ -22,12 +22,22 @@ In the Node.js app **Build settings** (or **Settings & Redeploy**), use:
 | **Framework** | Next.js |
 | **Node.js version** | 18.x, 20.x, or 22.x (match `engines` in `package.json`) |
 | **Install command** | `npm ci` (preferred) or `npm install` |
-| **Build command** | `npm run build` |
+| **Build command** | `npm run build` (uses `scripts/next-build.mjs`: low parallelism + `UV_THREADPOOL_SIZE=2` for small VPS / shared hosts) |
 | **Start command** | `npm start` (recommended) or `npm run start -- -p $PORT` |
 
 The app’s `start` script uses **`next start -p ${PORT:-3002}`**, so when Hostinger sets `PORT`, the app listens on that port. No need to pass `-p $PORT` in the start command unless the panel doesn’t set `PORT`.
 
 **Application root:** Leave as the folder that contains `package.json` (usually the root of the ZIP).
+
+### 503 or “too many processes” while deploying
+
+`next build` can spawn many workers; on small VPS / shared Node plans the host may enforce a low **process/thread limit**, which shows up as **503** or failed builds until things settle.
+
+This project already limits fan-out (`experimental.cpus`, `workerThreads`, webpack `parallelism`, static-generation concurrency, and `scripts/next-build.mjs` with a small `UV_THREADPOOL_SIZE`). If it still happens:
+
+1. **Do not start a new deploy until the current one finishes** (overlapping installs/builds multiply load).
+2. **Optional — build on your machine or CI**, then upload a ZIP that **includes** a fresh `.next` from `npm ci && npm run build`. In hPanel, only skip or shorten the server **Build command** if their docs say that is supported when artifacts are already present; otherwise keep `npm run build` (it will be slower but should stay under limits better than before).
+3. **Upgrade the hosting plan** if CPU/process limits are still exceeded during build.
 
 ---
 
@@ -54,8 +64,8 @@ Missing env vars are a **common cause of build or runtime failures**. Double-che
 - **`postinstall`: `prisma generate`**  
   Ensures the Prisma client (and types like `UserRole`) is generated right after `npm install`, so the Next.js build and any code that imports from `@prisma/client` or `@/lib/db/client` don’t fail with “has no exported member”.
 
-- **`build`: `prisma generate && next build`**  
-  Runs `prisma generate` again before `next build` so the client is always up to date on the server.
+- **`build`: `prisma generate` + `next build` (via `scripts/next-build.mjs`)**  
+  Runs `prisma generate` then Next with capped webpack/static-generation parallelism so deploys don’t spawn hundreds of processes on hosts with low `nproc` limits (which can cause **503** during or right after build).
 
 - **`start`: `next start -p ${PORT:-3002}`**  
   Uses Hostinger’s `PORT` when set; otherwise uses 3002 for local runs.

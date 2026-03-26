@@ -5,9 +5,19 @@ const nextConfig = {
     // Keep worker fan-out low to make production builds stable.
     cpus: 1,
     workerThreads: false,
+    // Fewer static-generation workers → fewer child processes during `next build`.
+    staticGenerationMaxConcurrency: 1,
+    staticGenerationMinPagesPerWorker: 999,
     serverActions: {
       bodySizeLimit: '50mb',
     },
+  },
+  webpack: (config, { dev }) => {
+    if (!dev) {
+      // Webpack default parallelism is high; cap it for low nproc hosts (e.g. Hostinger).
+      config.parallelism = 1;
+    }
+    return config;
   },
   images: {
     remotePatterns: [
