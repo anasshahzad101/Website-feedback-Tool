@@ -122,10 +122,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Create annotation
+    const d = validated.data;
+    let reviewRevisionId: string | undefined = d.reviewRevisionId;
+    if (reviewRevisionId) {
+      const rev = await db.reviewRevision.findFirst({
+        where: {
+          id: reviewRevisionId,
+          reviewItemId: d.reviewItemId,
+        },
+        select: { id: true },
+      });
+      if (!rev) {
+        reviewRevisionId = undefined;
+      }
+    }
+
+    const clamp01 = (n: number) =>
+      Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+
+    // Create annotation — explicit fields only (no stray keys; valid FK for revision).
     const annotation = await db.annotation.create({
       data: {
-        ...validated.data,
+        reviewItemId: d.reviewItemId,
+        reviewRevisionId,
+        annotationType: d.annotationType,
+        x: d.x,
+        y: d.y,
+        xPercent: clamp01(d.xPercent),
+        yPercent: clamp01(d.yPercent),
+        width: d.width,
+        height: d.height,
+        widthPercent:
+          d.widthPercent !== undefined ? clamp01(d.widthPercent) : undefined,
+        heightPercent:
+          d.heightPercent !== undefined ? clamp01(d.heightPercent) : undefined,
+        pointsJson: d.pointsJson,
+        targetFrame: d.targetFrame,
+        targetTimestampMs: d.targetTimestampMs,
+        viewportMetaJson: d.viewportMetaJson,
+        screenshotContextPath: d.screenshotContextPath,
+        color: d.color,
         createdByUserId: session.user.id,
       },
       include: {
@@ -135,19 +171,22 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Log activity
-    await db.activityLog.create({
-      data: {
-        entityType: "ReviewItem",
-        entityId: reviewItem.id,
-        actionType: ActivityActionType.ANNOTATION_CREATED,
-        actorUserId: session.user.id,
-        metaJson: JSON.stringify({
-          annotationId: annotation.id,
-          type: annotation.annotationType,
-        }),
-      },
-    });
+    try {
+      await db.activityLog.create({
+        data: {
+          entityType: "ReviewItem",
+          entityId: reviewItem.id,
+          actionType: ActivityActionType.ANNOTATION_CREATED,
+          actorUserId: session.user.id,
+          metaJson: JSON.stringify({
+            annotationId: annotation.id,
+            type: annotation.annotationType,
+          }),
+        },
+      });
+    } catch (logErr) {
+      console.error("Annotation created but activity log failed:", logErr);
+    }
 
     return NextResponse.json({ annotation }, { status: 201 });
   } catch (error) {

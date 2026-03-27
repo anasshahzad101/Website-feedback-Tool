@@ -8,7 +8,13 @@ export const pointSchema = z.object({
 
 export const annotationSchema = z.object({
   reviewItemId: z.string(),
-  reviewRevisionId: z.string().optional(),
+  reviewRevisionId: z.preprocess(
+    (v) =>
+      v === null || v === undefined || v === ""
+        ? undefined
+        : String(v).trim() || undefined,
+    z.string().uuid().optional()
+  ),
   annotationType: z.nativeEnum(AnnotationType),
   x: z.number(),
   y: z.number(),
