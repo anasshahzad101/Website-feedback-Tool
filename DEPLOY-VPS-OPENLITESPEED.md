@@ -34,6 +34,8 @@ Build your `DATABASE_URL`:
 
 ## 3. App directory and code
 
+Many minimal VPS images **do not create `/var/www`**. If `cd /var/www` says *No such file or directory*, create it (or deploy under another path such as `/home/youruser/apps/` and use that everywhere below):
+
 ```bash
 sudo mkdir -p /var/www
 sudo chown "$USER":"$USER" /var/www
@@ -163,6 +165,17 @@ The app allows large server actions in `next.config.js`. If uploads fail with 41
 - **Plain OLS**: use WebAdmin **SSL** for the vhost, or terminate with **Certbot** + configure the certificate path in the vhost.
 
 You must use **HTTPS** in production for `AUTH_URL` / cookies.
+
+### Let’s Encrypt says “inaccessible, please verify”
+
+ACME (HTTP-01) must reach your server on the **exact hostname** you requested. Check:
+
+1. **DNS** — An **A record** for `yourdomain.com` (and `www` if you use it) points to this VPS’s **public IP**. Wait for propagation (`dig +short yourdomain.com`).
+2. **Port 80** — Open on the VPS firewall (`sudo ufw allow 80/tcp`) and allowed by your host’s cloud firewall/security group.
+3. **Web server** — Something must answer `http://yourdomain.com/` on port 80 (OLS listener on 80, or the tool’s built-in challenge handler). If the vhost isn’t listening yet, issuance fails.
+4. **No CDN proxy-only** — For HTTP-01, some setups need the hostname to hit the origin directly (or use DNS-01 instead).
+
+Fix DNS + port 80 first, then retry SSL. **`^V` / `^M` / `: command not found`** usually means Windows-style paste or carriage returns; paste commands one line at a time or use a proper SSH client paste.
 
 ---
 
