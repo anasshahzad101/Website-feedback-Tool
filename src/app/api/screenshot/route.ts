@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db/client";
 import path from "path";
 import fs from "fs/promises";
+import { saveContextPngFromBase64 } from "@/lib/server/save-context-screenshot";
 
 async function saveScreenshotBuffer(
   imgBuffer: Buffer,
@@ -43,21 +44,14 @@ export async function POST(request: NextRequest) {
 
     // Client-captured viewport / crop (PNG data URL or raw base64)
     if (typeof imageBase64 === "string" && imageBase64.trim().length > 0) {
-      let payload = imageBase64.trim();
-      const dataUrlMatch = payload.match(/^data:image\/\w+;base64,(.+)$/i);
-      if (dataUrlMatch) payload = dataUrlMatch[1]!;
-
-      let buf: Buffer;
-      try {
-        buf = Buffer.from(payload, "base64");
-      } catch {
-        return NextResponse.json({ error: "Invalid base64 image" }, { status: 400 });
+      const saved = await saveContextPngFromBase64(imageBase64);
+      if (!saved.ok) {
+        return NextResponse.json(
+          { error: saved.error },
+          { status: saved.error === "Image too large" ? 413 : 400 }
+        );
       }
-      if (buf.length > 6 * 1024 * 1024) {
-        return NextResponse.json({ error: "Image too large" }, { status: 400 });
-      }
-
-      const relPath = await saveScreenshotBuffer(buf, "context");
+      const relPath = saved.relativePath;
 
       // Never write client-provided PNGs onto the review item or revision.
       // Those belong on annotations (screenshotContextPath) only. Updating the

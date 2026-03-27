@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db, UserRole, ProjectRole, ActivityActionType, CommentStatus } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
 import { commentThreadSchema, commentReplySchema, updateThreadStatusSchema } from "@/lib/validations/comment";
+import { saveContextPngFromBase64 } from "@/lib/server/save-context-screenshot";
 
 // GET /api/comments - List comment threads
 export async function GET(request: NextRequest) {
@@ -101,6 +102,7 @@ export async function POST(request: NextRequest) {
       rootAnnotationId,
       initialMessage,
       attachments,
+      pinContextImageBase64,
     } = validated.data;
 
     // Check access
@@ -154,15 +156,31 @@ export async function POST(request: NextRequest) {
         },
       });
 
+      let savedScreenshotContextPath: string | null = null;
+
       // Update annotation to link to thread if applicable
       if (rootAnnotationId) {
+        if (
+          typeof pinContextImageBase64 === "string" &&
+          pinContextImageBase64.trim().length > 0
+        ) {
+          const saved = await saveContextPngFromBase64(pinContextImageBase64);
+          if (saved.ok) {
+            savedScreenshotContextPath = saved.relativePath;
+          }
+        }
         await tx.annotation.update({
           where: { id: rootAnnotationId },
-          data: { commentThreadId: thread.id },
+          data: {
+            commentThreadId: thread.id,
+            ...(savedScreenshotContextPath
+              ? { screenshotContextPath: savedScreenshotContextPath }
+              : {}),
+          },
         });
       }
 
-      return { thread, message };
+      return { thread, message, savedScreenshotContextPath };
     });
 
     // Log activity
@@ -194,7 +212,13 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    return NextResponse.json({ thread: fullThread }, { status: 201 });
+    return NextResponse.json(
+      {
+        thread: fullThread,
+        screenshotContextPath: result.savedScreenshotContextPath,
+      },
+      { status: 201 }
+    );
   } catch (error) {
     console.error("Error creating comment thread:", error);
     return NextResponse.json(

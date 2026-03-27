@@ -55,48 +55,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   });
 }
 
-async function postJsonWithTimeout(
-  url: string,
-  body: unknown,
-  timeoutMs: number
-): Promise<Response | null> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctl.signal,
-    });
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function patchJsonWithTimeout(
-  url: string,
-  body: unknown,
-  timeoutMs: number
-): Promise<Response | null> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctl.signal,
-    });
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export type { Annotation };
 
 export interface CommentThread {
@@ -630,6 +588,67 @@ export function ReviewViewer({
         uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
       }
 
+      // Pin snapshot: send with the comment POST so the server persists it in one
+      // transaction (avoids failing /api/screenshot or PATCH in the background).
+      let pinContextImageBase64: string | undefined;
+      if (annotationForContext && annotationId) {
+        if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
+          if (websiteViewMode === "live") {
+            const iframe = contentRef.current?.querySelector("iframe");
+            let dataUrl: string | null = null;
+            const inFlight = liveContextInFlightRef.current;
+            if (inFlight?.pinClientId === annotationForContext.id) {
+              dataUrl = await withTimeout(inFlight.promise, 35000);
+            }
+            liveContextInFlightRef.current = null;
+            if (!dataUrl && iframe) {
+              dataUrl = await withTimeout(
+                captureIframeViewport(
+                  iframe,
+                  {
+                    x: annotationForContext.x,
+                    y: annotationForContext.y,
+                  },
+                  {
+                    allowHeavyFallback: true,
+                    preferAccuracy: true,
+                    frozen: frozenWebsiteViewport,
+                  }
+                ),
+                25000
+              );
+            }
+            if (dataUrl) pinContextImageBase64 = dataUrl;
+          } else {
+            const img = contentRef.current?.querySelector(
+              'img[alt="Website screenshot"]'
+            ) as HTMLImageElement | null;
+            if (img) {
+              const dataUrl = captureImageAroundPin(
+                img,
+                annotationForContext.xPercent,
+                annotationForContext.yPercent
+              );
+              if (dataUrl) pinContextImageBase64 = dataUrl;
+            }
+          }
+        } else if (reviewItem.type === "IMAGE" && effectiveFilePath) {
+          const img = contentRef.current?.querySelector(
+            'img[alt="Review image"]'
+          ) as HTMLImageElement | null;
+          if (img) {
+            const dataUrl = captureImageAroundPin(
+              img,
+              annotationForContext.xPercent,
+              annotationForContext.yPercent
+            );
+            if (dataUrl) pinContextImageBase64 = dataUrl;
+          }
+        }
+      } else {
+        liveContextInFlightRef.current = null;
+      }
+
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -639,6 +658,9 @@ export function ReviewViewer({
           rootAnnotationId: annotationId,
           initialMessage: newComment.trim(),
           ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
+          ...(pinContextImageBase64
+            ? { pinContextImageBase64 }
+            : {}),
         }),
       });
 
@@ -661,7 +683,10 @@ export function ReviewViewer({
         }
         throw new Error(msg);
       }
-      const { thread } = commentPayload as { thread: CommentThread };
+      const { thread, screenshotContextPath } = commentPayload as {
+        thread: CommentThread;
+        screenshotContextPath?: string | null;
+      };
       setThreads((prev) => [thread, ...prev]);
       setAnnotations((prev) =>
         prev.map((a) =>
@@ -670,6 +695,9 @@ export function ReviewViewer({
                 ...a,
                 commentThreadId: thread.id,
                 commentThread: { id: thread.id, status: thread.status },
+                ...(screenshotContextPath
+                  ? { screenshotContextPath }
+                  : {}),
               }
             : a
         )
@@ -679,130 +707,6 @@ export function ReviewViewer({
       clearComposeStaged();
       setSelectedAnnotationId(null);
       toast.success("Comment posted");
-
-      // Save screenshot context in background so UI never blocks on heavy pages.
-      if (annotationId && annotationForContext) {
-        void (async () => {
-          try {
-            let screenshotContextPath: string | undefined;
-
-            if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
-              if (websiteViewMode === "live") {
-                // Capture the viewport around the placed pin (not top-of-page remote shot).
-                const root = contentRef.current;
-                const iframe = root?.querySelector("iframe");
-                if (iframe) {
-                  let dataUrl: string | null = null;
-                  const inFlight = liveContextInFlightRef.current;
-                  if (inFlight?.pinClientId === annotationForContext.id) {
-                    dataUrl = await withTimeout(inFlight.promise, 35000);
-                  }
-                  liveContextInFlightRef.current = null;
-                  if (!dataUrl) {
-                    dataUrl = await withTimeout(
-                      captureIframeViewport(
-                        iframe,
-                        {
-                          x: annotationForContext.x,
-                          y: annotationForContext.y,
-                        },
-                        {
-                          allowHeavyFallback: true,
-                          preferAccuracy: true,
-                          frozen: frozenWebsiteViewport,
-                        }
-                      ),
-                      25000
-                    );
-                  }
-                  if (dataUrl) {
-                    const shotRes = await postJsonWithTimeout(
-                      "/api/screenshot",
-                      { imageBase64: dataUrl, contextOnly: true },
-                      20000
-                    );
-                    if (shotRes?.ok) {
-                      const data = await shotRes.json();
-                      screenshotContextPath = (data as { screenshotPath?: string })
-                        .screenshotPath;
-                    }
-                  }
-                }
-                // Do not fall back to URL-only Microlink here: it always captures the
-                // top of the page and looks like a broken pin snapshot when the user
-                // commented lower on the page.
-              } else {
-                const root = contentRef.current;
-                const img = root?.querySelector(
-                  'img[alt="Website screenshot"]'
-                ) as HTMLImageElement | null;
-                if (img) {
-                  const dataUrl = captureImageAroundPin(
-                    img,
-                    annotationForContext.xPercent,
-                    annotationForContext.yPercent
-                  );
-                  if (dataUrl) {
-                    const shotRes = await postJsonWithTimeout(
-                      "/api/screenshot",
-                      { imageBase64: dataUrl, contextOnly: true },
-                      9000
-                    );
-                    if (shotRes?.ok) {
-                      const data = await shotRes.json();
-                      screenshotContextPath = (data as { screenshotPath?: string })
-                        .screenshotPath;
-                    }
-                  }
-                }
-              }
-            } else if (reviewItem.type === "IMAGE" && effectiveFilePath) {
-              const root = contentRef.current;
-              const img = root?.querySelector(
-                'img[alt="Review image"]'
-              ) as HTMLImageElement | null;
-              if (img) {
-                const dataUrl = captureImageAroundPin(
-                  img,
-                  annotationForContext.xPercent,
-                  annotationForContext.yPercent
-                );
-                if (dataUrl) {
-                  const shotRes = await postJsonWithTimeout(
-                    "/api/screenshot",
-                    { imageBase64: dataUrl, contextOnly: true },
-                    9000
-                  );
-                  if (shotRes?.ok) {
-                    const data = await shotRes.json();
-                    screenshotContextPath = (data as { screenshotPath?: string })
-                      .screenshotPath;
-                  }
-                }
-              }
-            }
-
-            if (screenshotContextPath) {
-              const patchRes = await patchJsonWithTimeout(
-                `/api/annotations/${annotationId}`,
-                { screenshotContextPath },
-                8000
-              );
-              if (patchRes?.ok) {
-                setAnnotations((prev) =>
-                  prev.map((a) =>
-                    a.id === annotationId ? { ...a, screenshotContextPath } : a
-                  )
-                );
-              } else {
-                console.error("Annotation context PATCH failed");
-              }
-            }
-          } catch (e) {
-            console.error("Background context screenshot failed:", e);
-          }
-        })();
-      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to submit comment");
     } finally {

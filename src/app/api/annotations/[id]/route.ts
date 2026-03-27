@@ -51,6 +51,14 @@ export async function PATCH(
           session.user.role as UserRole,
           userMembership.roleInProject as ProjectRole,
           false
+        )) ||
+      // Pin snapshot PATCH from client: any member who can comment may attach context
+      (userMembership &&
+        Permissions.canCreateComment(
+          session.user.role as UserRole,
+          userMembership.roleInProject as ProjectRole,
+          annotation.reviewItem.guestCommentingEnabled,
+          false
         ));
     if (!canEdit) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
