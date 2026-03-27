@@ -2,6 +2,8 @@
 
 Deploy this Next.js + Prisma app via **ZIP upload** on Hostinger. Follow this checklist so builds don’t fail.
 
+**VPS + OpenLiteSpeed + PM2:** see **[`DEPLOY-VPS-OPENLITESPEED.md`](DEPLOY-VPS-OPENLITESPEED.md)** and **`ecosystem.config.example.cjs`**.
+
 ---
 
 ## 1. ZIP contents (what to include / exclude)
