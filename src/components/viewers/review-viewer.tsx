@@ -65,10 +65,17 @@ async function uploadPinContextToServer(dataUrl: string): Promise<string | null>
     });
     const data = (await res.json().catch(() => ({}))) as {
       screenshotPath?: string;
+      error?: string;
     };
-    if (!res.ok || !data.screenshotPath?.trim()) return null;
+    if (!res.ok) {
+      const msg = data.error?.trim();
+      if (msg) toast.error(`Pin screenshot upload failed: ${msg}`);
+      return null;
+    }
+    if (!data.screenshotPath?.trim()) return null;
     return data.screenshotPath.trim();
   } catch {
+    toast.error("Pin screenshot upload failed (network error)");
     return null;
   }
 }
@@ -673,6 +680,17 @@ export function ReviewViewer({
         if (uploadedPath) pinContextScreenshotPath = uploadedPath;
       }
 
+      // If upload returned a path but /api/comments can't see the file yet (FS lag), or path-only
+      // fails on the host, a small inline PNG lets the server save from base64 (keeps large iframe
+      // captures path-only to avoid proxy body limits).
+      const INLINE_BACKUP_MAX = 450_000;
+      const INLINE_FALLBACK_MAX = 900_000;
+      const sendPinImageInline =
+        !!pinContextImageBase64 &&
+        (pinContextImageBase64.length <= INLINE_BACKUP_MAX ||
+          (!pinContextScreenshotPath &&
+            pinContextImageBase64.length <= INLINE_FALLBACK_MAX));
+
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -684,6 +702,9 @@ export function ReviewViewer({
           ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
           ...(pinContextScreenshotPath
             ? { pinContextScreenshotPath }
+            : {}),
+          ...(sendPinImageInline
+            ? { pinContextImageBase64: pinContextImageBase64 }
             : {}),
         }),
       });
@@ -730,7 +751,13 @@ export function ReviewViewer({
       setNewComment("");
       clearComposeStaged();
       setSelectedAnnotationId(null);
-      toast.success("Comment posted");
+      if (pinContextImageBase64 && !screenshotContextPath) {
+        toast.message(
+          "Comment saved, but no pin preview image was stored (check server logs / disk permissions)."
+        );
+      } else {
+        toast.success("Comment posted");
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to submit comment");
     } finally {

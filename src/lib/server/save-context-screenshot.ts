@@ -31,6 +31,15 @@ export async function saveContextPngFromBase64(
   );
   await fs.mkdir(uploadsDir, { recursive: true });
   const filename = `context-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
-  await fs.writeFile(path.join(uploadsDir, filename), buf);
+  const abs = path.join(uploadsDir, filename);
+  await fs.writeFile(abs, buf);
+  // Help the follow-up /api/comments request see the file immediately (NFS / host FS lag).
+  try {
+    const h = await fs.open(abs, "r");
+    await h.sync();
+    await h.close();
+  } catch {
+    /* best-effort */
+  }
   return { ok: true, relativePath: `/screenshots/${filename}` };
 }
