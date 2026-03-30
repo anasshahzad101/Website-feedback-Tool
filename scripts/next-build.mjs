@@ -4,7 +4,7 @@
  *
  * - Invokes the Next CLI with `node` (avoids `npx` → extra npm child processes).
  * - Caps libuv pool, libvips (sharp), and telemetry.
- * - Prisma client: run `postinstall` (npm ci) or `node scripts/prisma-generate.mjs` before build if needed.
+ * - Prisma client: run first in `npm run build` (see package.json), not in postinstall.
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";

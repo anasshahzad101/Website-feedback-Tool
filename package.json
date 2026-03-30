@@ -4,9 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/next-build.mjs",
-    "start": "next start -p ${PORT:-3002}",
-    "postinstall": "node scripts/prisma-generate.mjs",
+    "build": "node scripts/prisma-generate.mjs && node scripts/next-build.mjs",
+    "start": "node --max-old-space-size=512 scripts/next-start.mjs",
+    "prune:dev": "npm prune --omit=dev --no-audit --no-fund",
     "lint": "next lint",
     "db:generate": "prisma generate",
     "db:local:generate": "prisma generate --schema=prisma/schema.sqlite.prisma",

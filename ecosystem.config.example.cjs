@@ -16,7 +16,11 @@ module.exports = {
       max_memory_restart: "800M",
       env: {
         NODE_ENV: "production",
-        PORT: "3000",
+        HOSTNAME: "0.0.0.0",
+        // Must match what nginx/OpenLiteSpeed proxies to (Hostinger often sets PORT for you).
+        PORT: "3002",
+        // Optional: raise if the app OOMs (scripts/next-start.mjs defaults to 512).
+        // NODE_HEAP_MB: "768",
       },
       // Or load all vars from a file (install dotenv-cli or use bash wrapper):
       // env_file: ".env",

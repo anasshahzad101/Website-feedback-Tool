@@ -37,9 +37,9 @@ In the Node.js app **Build settings** (or **Settings & Redeploy**), use:
 | **Node.js version** | 18.x, 20.x, or 22.x (match `engines` in `package.json`) |
 | **Install command** | `npm ci` (preferred) or `npm install` |
 | **Build command** | `npm run build` (`scripts/prisma-generate.mjs` + `scripts/next-build.mjs`: no `npx` chain, `UV_THREADPOOL_SIZE=1`, `VIPS_CONCURRENCY=1`, and `next.config.js` caps webpack / static generation) |
-| **Start command** | `npm start` (recommended) or `npm run start -- -p $PORT` |
+| **Start command** | `npm start` or `npm run start` (no build; only `scripts/next-start.mjs` → `next start`) |
 
-The app’s `start` script uses **`next start -p ${PORT:-3002}`**, so when Hostinger sets `PORT`, the app listens on that port. No need to pass `-p $PORT` in the start command unless the panel doesn’t set `PORT`.
+The `start` script uses **`process.env.PORT`** and **`0.0.0.0`** via `scripts/next-start.mjs`. Do not add `next build` or `prisma` here.
 
 **Application root:** Leave as the folder that contains `package.json` (usually the root of the ZIP).
 
@@ -89,14 +89,14 @@ Missing env vars are a **common cause of build or runtime failures**. Double-che
 
 ## 4. Why the build script is set up this way
 
-- **`postinstall`: `prisma generate`**  
-  Ensures the Prisma client (and types like `UserRole`) is generated right after `npm install`, so the Next.js build and any code that imports from `@prisma/client` or `@/lib/db/client` don’t fail with “has no exported member”.
+- **No `postinstall` Prisma**  
+  On Cloud Startup, `postinstall` runs on **every** `npm ci` and can repeat when deploys retry—spiking CPU/processes. Prisma runs **only** during **`npm run build`**.
 
 - **`build`: `prisma generate` + `next build` (via `scripts/prisma-generate.mjs` + `scripts/next-build.mjs`)**  
-  Runs Prisma and Next **without `npx`**, with **`UV_THREADPOOL_SIZE=1`**, **`VIPS_CONCURRENCY=1`**, and Next config caps so deploys stay closer to shared-host process limits.
+  Runs Prisma once per deploy, then Next **without `npx`**, with **`UV_THREADPOOL_SIZE=1`**, **`VIPS_CONCURRENCY=1`**, and Next config caps so deploys stay closer to shared-host process limits.
 
-- **`start`: `next start -p ${PORT:-3002}`**  
-  Uses Hostinger’s `PORT` when set; otherwise uses 3002 for local runs.
+- **`start`: `node --max-old-space-size=512 scripts/next-start.mjs`**  
+  Production `next start` on **`0.0.0.0`** and **`process.env.PORT`** (see `scripts/next-start.mjs`). No build, migrate, or generate.
 
 ---
 
@@ -124,7 +124,7 @@ If you ran deploy when only (1) existed, the database had **`app_settings`** but
 1. Open **Deployments** in the Node.js app dashboard and open the **failed** deployment.
 2. Open **Build logs** and check:
    - **Exit codes** and lines marked **ERROR**
-   - **Stack traces** or **module-not-found** (e.g. missing `UserRole` → Prisma client not generated; ensure `postinstall` / build script are unchanged)
+   - **Stack traces** or **module-not-found** (e.g. missing `UserRole` → Prisma client not generated; ensure **`npm run build`** runs `prisma-generate` + `next-build`)
    - Messages near the **end** of the log (often the real cause)
 
 3. **Common causes (from Hostinger’s docs):**
@@ -136,7 +136,7 @@ If you ran deploy when only (1) existed, the database had **`app_settings`** but
 
 4. **Checklist before redeploying:**
    - [ ] ZIP does **not** contain `node_modules` or `.env`
-   - [ ] `package.json` has correct `build` and `start` scripts (and `postinstall`)
+   - [ ] `package.json` has correct `build` (includes Prisma generate) and `start` (no build in `start`)
    - [ ] All required env vars are set in Hostinger
    - [ ] Node.js version in Hostinger matches the project (18/20/22)
    - [ ] You’re uploading the **latest** ZIP (with the fixes above), not an old one

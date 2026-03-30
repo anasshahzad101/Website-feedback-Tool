@@ -101,7 +101,7 @@ All variables are documented in [`.env.example`](.env.example).
 ```bash
 npm install
 
-# Prisma client (respects USE_SQLITE in .env via postinstall script)
+# Prisma client after install: npm run db:generate (or run npm run build once; generate runs in build)
 # SQLite-only local setup:
 npm run db:local:setup
 

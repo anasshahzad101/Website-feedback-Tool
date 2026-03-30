@@ -29,6 +29,8 @@ export NEXT_TELEMETRY_DISABLED="${NEXT_TELEMETRY_DISABLED:-1}"
 npm ci --no-audit --no-fund
 npx prisma migrate deploy
 npm run build
+# Fewer packages at runtime (build already ran; do not use --omit=dev before build).
+npm run prune:dev
 
 if pm2 describe website-feedback-tool >/dev/null 2>&1; then
   pm2 restart website-feedback-tool --update-env

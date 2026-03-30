@@ -1,6 +1,6 @@
 /**
  * Prisma validate/generate only needs a syntactically valid DATABASE_URL (no DB connection).
- * Vercel installs deps before env is guaranteed; missing URL breaks postinstall and yields no deployment → platform 404.
+ * Run from `npm run build` (not postinstall) so shared hosts do not re-run generate on every npm ci retry.
  *
  * Invokes the Prisma CLI with `node` (avoids `npx` → extra npm child processes on low-nproc hosts).
  *
