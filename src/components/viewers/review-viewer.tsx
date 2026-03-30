@@ -55,6 +55,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   });
 }
 
+/** Persist pin crop via /api/screenshot so /api/comments stays small (avoids proxy connection resets). */
+async function uploadPinContextToServer(dataUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch("/api/screenshot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageBase64: dataUrl, contextOnly: true }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      screenshotPath?: string;
+    };
+    if (!res.ok || !data.screenshotPath?.trim()) return null;
+    return data.screenshotPath.trim();
+  } catch {
+    return null;
+  }
+}
+
 export type { Annotation };
 
 export interface CommentThread {
@@ -588,8 +606,8 @@ export function ReviewViewer({
         uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
       }
 
-      // Pin snapshot: send with the comment POST so the server persists it in one
-      // transaction (avoids failing /api/screenshot or PATCH in the background).
+      // Pin snapshot: upload image first, then send only `/screenshots/...` on the comment POST
+      // so JSON stays small (many hosts reset oversized /api/comments bodies).
       let pinContextImageBase64: string | undefined;
       if (annotationForContext && annotationId) {
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
@@ -649,6 +667,12 @@ export function ReviewViewer({
         liveContextInFlightRef.current = null;
       }
 
+      let pinContextScreenshotPath: string | undefined;
+      if (pinContextImageBase64) {
+        const uploadedPath = await uploadPinContextToServer(pinContextImageBase64);
+        if (uploadedPath) pinContextScreenshotPath = uploadedPath;
+      }
+
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -658,8 +682,8 @@ export function ReviewViewer({
           rootAnnotationId: annotationId,
           initialMessage: newComment.trim(),
           ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
-          ...(pinContextImageBase64
-            ? { pinContextImageBase64 }
+          ...(pinContextScreenshotPath
+            ? { pinContextScreenshotPath }
             : {}),
         }),
       });

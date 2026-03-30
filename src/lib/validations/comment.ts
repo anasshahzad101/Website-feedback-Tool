@@ -8,6 +8,10 @@ const commentAttachmentSchema = z.object({
   mime: z.string().optional(),
 });
 
+const pinScreenshotPathSchema = z
+  .string()
+  .regex(/^\/screenshots\/[a-zA-Z0-9._-]+\.png$/i);
+
 export const commentThreadSchema = z
   .object({
     reviewItemId: z.string(),
@@ -15,8 +19,13 @@ export const commentThreadSchema = z
     rootAnnotationId: z.string().optional(),
     initialMessage: z.string().optional().default(""),
     attachments: z.array(commentAttachmentSchema).max(8).optional(),
-    /** PNG data URL or base64 — saved on the root annotation with the thread (same auth as comment). */
-    pinContextImageBase64: z.string().max(12_000_000).optional(),
+    /**
+     * Prefer this over inline base64: large JSON bodies are often reset by reverse proxies
+     * (e.g. ERR_CONNECTION_RESET). Upload PNG via POST /api/screenshot first, then send this path.
+     */
+    pinContextScreenshotPath: pinScreenshotPathSchema.optional(),
+    /** PNG data URL or raw base64 — kept for small fallbacks; prefer pinContextScreenshotPath. */
+    pinContextImageBase64: z.string().max(900_000).optional(),
   })
   .superRefine((data, ctx) => {
     const hasText = (data.initialMessage ?? "").trim().length > 0;

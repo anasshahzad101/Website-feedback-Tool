@@ -3,7 +3,10 @@
 import { domToPng } from "modern-screenshot";
 import html2canvas from "html2canvas";
 
-const MAX_CONTEXT_EDGE = 1600;
+/** Max dimension for iframe / viewport captures (keeps uploads proxy-friendly). */
+const MAX_CONTEXT_EDGE = 1200;
+/** Tighter cap for static image pin crops (uploaded as JSON to /api/screenshot). */
+const MAX_PIN_CONTEXT_EDGE = 640;
 
 type ViewportTarget =
   | {
@@ -197,17 +200,25 @@ async function focusCropAroundPin(
   });
 }
 
-async function downscaleDataUrl(dataUrl: string): Promise<string> {
+async function downscaleDataUrl(
+  dataUrl: string,
+  maxEdge: number = MAX_CONTEXT_EDGE
+): Promise<string> {
   return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(dataUrl), 8000);
     const img = new Image();
+    const finish = (out: string) => {
+      clearTimeout(t);
+      resolve(out);
+    };
     img.onload = () => {
       let w = img.naturalWidth;
       let h = img.naturalHeight;
-      if (w <= MAX_CONTEXT_EDGE && h <= MAX_CONTEXT_EDGE) {
-        resolve(dataUrl);
+      if (w <= maxEdge && h <= maxEdge) {
+        finish(dataUrl);
         return;
       }
-      const r = Math.min(MAX_CONTEXT_EDGE / w, MAX_CONTEXT_EDGE / h, 1);
+      const r = Math.min(maxEdge / w, maxEdge / h, 1);
       w = Math.max(1, Math.floor(w * r));
       h = Math.max(1, Math.floor(h * r));
       const c = document.createElement("canvas");
@@ -215,13 +226,13 @@ async function downscaleDataUrl(dataUrl: string): Promise<string> {
       c.height = h;
       const ctx = c.getContext("2d");
       if (!ctx) {
-        resolve(dataUrl);
+        finish(dataUrl);
         return;
       }
       ctx.drawImage(img, 0, 0, w, h);
-      resolve(c.toDataURL("image/png", 0.88));
+      finish(c.toDataURL("image/png", 0.88));
     };
-    img.onerror = () => resolve(dataUrl);
+    img.onerror = () => finish(dataUrl);
     img.src = dataUrl;
   });
 }
@@ -381,32 +392,51 @@ export async function captureIframeViewport(
   }
 }
 
+const IMAGE_READY_TIMEOUT_MS = 12_000;
+
 /**
  * Wait until the image has pixel dimensions so canvas capture is reliable.
  * Submitting a comment immediately after placing a pin often ran while `naturalWidth` was still 0.
+ *
+ * Uses `complete` + listeners with a post-check for the race where `load` fires before listeners
+ * attach (otherwise the Promise never resolves and comment submit hangs forever).
  */
 export async function ensureImageReadyForCanvasCapture(
   img: HTMLImageElement
 ): Promise<boolean> {
   if (img.naturalWidth > 0 && img.naturalHeight > 0) return true;
-  if (!img.complete) {
-    await new Promise<void>((resolve) => {
-      const onDone = () => {
-        img.removeEventListener("load", onDone);
-        img.removeEventListener("error", onDone);
-        resolve();
-      };
-      img.addEventListener("load", onDone);
-      img.addEventListener("error", onDone);
+
+  const waitLoadOrError = () =>
+    new Promise<void>((resolve) => {
+      const onDone = () => resolve();
+      img.addEventListener("load", onDone, { once: true });
+      img.addEventListener("error", onDone, { once: true });
+      // If load/error already ran before listeners were attached, `complete` is true — do not hang.
+      if (img.complete) onDone();
     });
+
+  if (!img.complete) {
+    await Promise.race([
+      waitLoadOrError(),
+      new Promise<void>((resolve) =>
+        setTimeout(resolve, IMAGE_READY_TIMEOUT_MS)
+      ),
+    ]);
   }
+
   if (img.naturalWidth > 0 && img.naturalHeight > 0) return true;
+
   try {
     if (typeof img.decode === "function") {
-      await img.decode();
+      await Promise.race([
+        img.decode(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error("decode timeout")), IMAGE_READY_TIMEOUT_MS)
+        ),
+      ]);
     }
   } catch {
-    /* broken or undecodable image */
+    /* broken, undecodable, or timed out */
   }
   return img.naturalWidth > 0 && img.naturalHeight > 0;
 }
@@ -452,5 +482,5 @@ export async function captureImageAroundPinAsync(
   if (!ready) return null;
   const dataUrl = captureImageAroundPin(img, xPercent, yPercent);
   if (!dataUrl) return null;
-  return downscaleDataUrl(dataUrl);
+  return downscaleDataUrl(dataUrl, MAX_PIN_CONTEXT_EDGE);
 }

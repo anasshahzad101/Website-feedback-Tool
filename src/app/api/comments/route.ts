@@ -4,6 +4,7 @@ import { db, UserRole, ProjectRole, ActivityActionType, CommentStatus } from "@/
 import { Permissions } from "@/lib/auth/permissions";
 import { commentThreadSchema, commentReplySchema, updateThreadStatusSchema } from "@/lib/validations/comment";
 import { saveContextPngFromBase64 } from "@/lib/server/save-context-screenshot";
+import { assertUploadsScreenshotFileExists } from "@/lib/server/verify-uploaded-screenshot-path";
 
 // GET /api/comments - List comment threads
 export async function GET(request: NextRequest) {
@@ -103,7 +104,21 @@ export async function POST(request: NextRequest) {
       initialMessage,
       attachments,
       pinContextImageBase64,
+      pinContextScreenshotPath,
     } = validated.data;
+
+    let trustedPinScreenshotPath: string | null = null;
+    if (pinContextScreenshotPath?.trim()) {
+      trustedPinScreenshotPath = await assertUploadsScreenshotFileExists(
+        pinContextScreenshotPath
+      );
+      if (!trustedPinScreenshotPath) {
+        console.warn(
+          "[comments] pinContextScreenshotPath missing on disk (comment will be created without it):",
+          pinContextScreenshotPath
+        );
+      }
+    }
 
     // Check access
     const reviewItem = await db.reviewItem.findUnique({
@@ -160,7 +175,9 @@ export async function POST(request: NextRequest) {
 
       // Update annotation to link to thread if applicable
       if (rootAnnotationId) {
-        if (
+        if (trustedPinScreenshotPath) {
+          savedScreenshotContextPath = trustedPinScreenshotPath;
+        } else if (
           typeof pinContextImageBase64 === "string" &&
           pinContextImageBase64.trim().length > 0
         ) {
@@ -216,6 +233,13 @@ export async function POST(request: NextRequest) {
         assignedTo: { select: { id: true, firstName: true, lastName: true } },
       },
     });
+
+    if (!fullThread) {
+      return NextResponse.json(
+        { error: "Thread was created but could not be loaded" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(
       {
