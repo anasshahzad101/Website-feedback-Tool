@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import {
   captureIframeViewport,
-  captureImageAroundPin,
+  captureImageAroundPinAsync,
   freezeIframeViewport,
 } from "@/lib/capture-annotation-context";
 
@@ -624,7 +624,7 @@ export function ReviewViewer({
               'img[alt="Website screenshot"]'
             ) as HTMLImageElement | null;
             if (img) {
-              const dataUrl = captureImageAroundPin(
+              const dataUrl = await captureImageAroundPinAsync(
                 img,
                 annotationForContext.xPercent,
                 annotationForContext.yPercent
@@ -637,7 +637,7 @@ export function ReviewViewer({
             'img[alt="Review image"]'
           ) as HTMLImageElement | null;
           if (img) {
-            const dataUrl = captureImageAroundPin(
+            const dataUrl = await captureImageAroundPinAsync(
               img,
               annotationForContext.xPercent,
               annotationForContext.yPercent
@@ -1862,6 +1862,8 @@ function ContentDisplay({
             alt="Website screenshot"
             className="w-full h-auto block"
             draggable={false}
+            decoding="async"
+            fetchPriority="high"
           />
         ) : (
           <div className="flex items-center justify-center min-h-[600px]">
@@ -1899,6 +1901,8 @@ function ContentDisplay({
         alt="Review image"
         className="max-w-none block"
         draggable={false}
+        decoding="async"
+        fetchPriority="high"
         style={{ display: "block" }}
       />
     );

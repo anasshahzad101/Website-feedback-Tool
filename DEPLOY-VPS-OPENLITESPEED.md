@@ -225,6 +225,35 @@ Fix anything reported missing (especially `AUTH_URL`, `DATABASE_URL`).
 
 ---
 
+## 11. Easier updates (auto deploy)
+
+**Option A — one script on the server (simplest)**  
+After `git pull` is available on the VPS, run from the app directory:
+
+```bash
+chmod +x scripts/deploy-vps.sh   # once
+./scripts/deploy-vps.sh
+```
+
+Or from anywhere:
+
+```bash
+DEPLOY_APP_DIR=/var/www/website-feedback-tool bash /var/www/website-feedback-tool/scripts/deploy-vps.sh
+```
+
+The script pulls `main`, runs `npm ci`, `prisma migrate deploy`, `npm run build`, then `pm2 restart website-feedback-tool --update-env`.
+
+**Option B — GitHub Actions (push to `main` → deploy)**  
+Copy `.github/workflows/deploy-vps.example.yml` to `.github/workflows/deploy-vps.yml`. Add secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (deploy key or your user’s SSH private key). Each push to `main` will SSH in and run `scripts/deploy-vps.sh`. You can also trigger **Run workflow** manually from the Actions tab.
+
+**Option C — install a PaaS on the VPS (or a second small VPS)**  
+Tools like **[Coolify](https://coolify.io/)**, **[CapRover](https://caprover.com/)**, or **[Dokku](https://dokku.com/)** give Git-based deploys and reverse proxy + TLS in one UI. They usually expect **Docker** and their own proxy; fitting them *alongside* an existing OpenLiteSpeed setup is possible but more involved than Option A/B.
+
+**Option D — self-hosted GitHub Actions runner**  
+Install a runner on the VPS so jobs run locally (no SSH). Same deploy commands as the script; you maintain the runner service.
+
+---
+
 ## References
 
 - [OpenLiteSpeed documentation](https://openlitespeed.org/kb/)

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/prisma-generate.mjs && node scripts/next-build.mjs",
+    "build": "node scripts/next-build.mjs",
     "start": "next start -p ${PORT:-3002}",
     "postinstall": "node scripts/prisma-generate.mjs",
     "lint": "next lint",

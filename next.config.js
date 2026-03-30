@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // ESLint during `next build` adds work and can add parallel tasks; run `npm run lint` locally/CI.
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   experimental: {
     // Shared hosts can hit process spawn limits (EAGAIN) during build.
     // Keep worker fan-out low to make production builds stable.

@@ -167,6 +167,11 @@ export async function POST(request: NextRequest) {
           const saved = await saveContextPngFromBase64(pinContextImageBase64);
           if (saved.ok) {
             savedScreenshotContextPath = saved.relativePath;
+          } else {
+            console.warn(
+              "[comments] pin context screenshot not saved:",
+              saved.error
+            );
           }
         }
         await tx.annotation.update({

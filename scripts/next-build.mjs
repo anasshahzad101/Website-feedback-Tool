@@ -1,25 +1,41 @@
 /**
- * Run `next build` with conservative threading for shared/VPS hosts that hit
- * process/thread limits (503, EAGAIN, "too many processes") during deploy.
+ * Run `next build` with minimal subprocess/thread fan-out for shared hosts
+ * (Hostinger ~200 process limits, EAGAIN, 503 during deploy).
+ *
+ * - Invokes the Next CLI with `node` (avoids `npx` → extra npm child processes).
+ * - Caps libuv pool, libvips (sharp), and telemetry.
+ * - Prisma client: run `postinstall` (npm ci) or `node scripts/prisma-generate.mjs` before build if needed.
  */
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const nextCli = path.join(root, "node_modules", "next", "dist", "bin", "next");
 
-if (!process.env.UV_THREADPOOL_SIZE) {
-  process.env.UV_THREADPOOL_SIZE = "2";
-}
-if (!process.env.NEXT_TELEMETRY_DISABLED) {
-  process.env.NEXT_TELEMETRY_DISABLED = "1";
+if (!fs.existsSync(nextCli)) {
+  console.error("Missing Next.js CLI. Run npm ci first.");
+  process.exit(1);
 }
 
-const result = spawnSync("npx", ["next", "build"], {
+const env = { ...process.env };
+
+if (!env.UV_THREADPOOL_SIZE) {
+  env.UV_THREADPOOL_SIZE = "1";
+}
+if (!env.NEXT_TELEMETRY_DISABLED) {
+  env.NEXT_TELEMETRY_DISABLED = "1";
+}
+// Sharp / libvips: default concurrency can add threads during static analysis / images.
+if (!env.VIPS_CONCURRENCY) {
+  env.VIPS_CONCURRENCY = "1";
+}
+
+const result = spawnSync(process.execPath, [nextCli, "build"], {
   cwd: root,
-  env: process.env,
+  env,
   stdio: "inherit",
-  shell: true,
 });
 
 process.exit(result.status ?? 1);

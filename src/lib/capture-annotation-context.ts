@@ -381,6 +381,36 @@ export async function captureIframeViewport(
   }
 }
 
+/**
+ * Wait until the image has pixel dimensions so canvas capture is reliable.
+ * Submitting a comment immediately after placing a pin often ran while `naturalWidth` was still 0.
+ */
+export async function ensureImageReadyForCanvasCapture(
+  img: HTMLImageElement
+): Promise<boolean> {
+  if (img.naturalWidth > 0 && img.naturalHeight > 0) return true;
+  if (!img.complete) {
+    await new Promise<void>((resolve) => {
+      const onDone = () => {
+        img.removeEventListener("load", onDone);
+        img.removeEventListener("error", onDone);
+        resolve();
+      };
+      img.addEventListener("load", onDone);
+      img.addEventListener("error", onDone);
+    });
+  }
+  if (img.naturalWidth > 0 && img.naturalHeight > 0) return true;
+  try {
+    if (typeof img.decode === "function") {
+      await img.decode();
+    }
+  } catch {
+    /* broken or undecodable image */
+  }
+  return img.naturalWidth > 0 && img.naturalHeight > 0;
+}
+
 export function captureImageAroundPin(
   img: HTMLImageElement,
   xPercent: number,
@@ -410,4 +440,17 @@ export function captureImageAroundPin(
   } catch {
     return null;
   }
+}
+
+/** Same as {@link captureImageAroundPin} but waits for decode/load and caps size for API/upload limits. */
+export async function captureImageAroundPinAsync(
+  img: HTMLImageElement,
+  xPercent: number,
+  yPercent: number
+): Promise<string | null> {
+  const ready = await ensureImageReadyForCanvasCapture(img);
+  if (!ready) return null;
+  const dataUrl = captureImageAroundPin(img, xPercent, yPercent);
+  if (!dataUrl) return null;
+  return downscaleDataUrl(dataUrl);
 }

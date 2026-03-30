@@ -1,0 +1,32 @@
+# Copy to .github/workflows/deploy-vps.yml and set repository secrets.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST          — e.g. 148.135.137.137 or mypersonalclawbot.cloud
+#   VPS_USER          — e.g. ubuntu
+#   VPS_SSH_KEY       — private key (full PEM) that can SSH to the VPS
+#
+# On the VPS once: add the matching public key to ~/.ssh/authorized_keys
+# and chmod +x scripts/deploy-vps.sh (or: bash scripts/deploy-vps.sh).
+
+name: Deploy VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /var/www/website-feedback-tool
+            bash scripts/deploy-vps.sh
