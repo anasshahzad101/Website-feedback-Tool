@@ -1,19 +1,23 @@
-# Copy to .github/workflows/deploy-vps.yml and set repository secrets.
+# Optional VPS SSH deploy — does NOT run on push until you add secrets and enable the trigger below.
 #
-# Secrets (Settings → Secrets and variables → Actions):
-#   VPS_HOST          — e.g. 148.135.137.137 or mypersonalclawbot.cloud
+# Secrets (Settings → Secrets and variables → Actions → New repository secret):
+#   VPS_HOST          — e.g. 148.135.137.137 or myserver.example.com
 #   VPS_USER          — e.g. ubuntu
 #   VPS_SSH_KEY       — private key (full PEM) that can SSH to the VPS
 #
 # On the VPS once: add the matching public key to ~/.ssh/authorized_keys
 # and chmod +x scripts/deploy-vps.sh (or: bash scripts/deploy-vps.sh).
+#
+# Hostinger “deploy from Git” in hPanel does not use this file — only a self-managed VPS + SSH does.
+# After secrets are set, uncomment `push` so main-branch pushes deploy automatically.
 
 name: Deploy VPS
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+  # Uncomment after VPS_HOST, VPS_USER, and VPS_SSH_KEY are configured:
+  # push:
+  #   branches: [main]
 
 jobs:
   deploy:
