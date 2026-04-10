@@ -23,6 +23,12 @@ export type SerializedProjectForList = {
   }>;
 };
 
+function dateToIsoSafe(d: Date): string {
+  const t = d.getTime();
+  if (Number.isNaN(t)) return new Date(0).toISOString();
+  return d.toISOString();
+}
+
 type PrismaProjectRow = {
   id: string;
   name: string;
@@ -54,8 +60,8 @@ export function serializeProjectsForList(
     slug: p.slug,
     description: p.description,
     status: p.status,
-    createdAt: p.createdAt.toISOString(),
-    updatedAt: p.updatedAt.toISOString(),
+    createdAt: dateToIsoSafe(p.createdAt),
+    updatedAt: dateToIsoSafe(p.updatedAt),
     client: p.client,
     _count: p._count,
     reviewItems: p.reviewItems.map((ri) => ({

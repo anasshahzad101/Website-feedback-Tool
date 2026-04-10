@@ -26,9 +26,11 @@ function coerceSessionRole(role: string | undefined): UserRole {
 export default async function ProjectsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string }>;
+  searchParams: Promise<{ status?: string } | undefined>;
 }) {
-  const { status: statusParam } = await searchParams;
+  const sp = await searchParams;
+  const rawStatus = sp && typeof sp === "object" ? sp.status : undefined;
+  const statusParam = typeof rawStatus === "string" ? rawStatus : undefined;
   const session = await auth();
   if (!session?.user) {
     redirect("/login");

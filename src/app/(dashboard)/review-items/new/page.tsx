@@ -10,9 +10,16 @@ import { ArrowLeft } from "lucide-react";
 export default async function NewReviewItemPage({
   searchParams,
 }: {
-  searchParams: Promise<{ projectId?: string }>;
+  searchParams: Promise<{ projectId?: string } | undefined>;
 }) {
-  const { projectId } = await searchParams;
+  const sp = await searchParams;
+  const rawProjectId = sp && typeof sp === "object" ? sp.projectId : undefined;
+  const projectId =
+    typeof rawProjectId === "string"
+      ? rawProjectId
+      : Array.isArray(rawProjectId)
+        ? rawProjectId[0]
+        : undefined;
   const session = await auth();
   if (!session?.user) {
     redirect("/login");

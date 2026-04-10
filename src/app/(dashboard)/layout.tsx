@@ -2,8 +2,6 @@ import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { DashboardSidebar } from "@/components/layout/dashboard-sidebar";
 
-export const maxDuration = 60;
-
 export default async function DashboardLayout({
   children,
 }: {
