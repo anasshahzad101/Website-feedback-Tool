@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { publicRequestOrigin } from "@/lib/server/public-request-origin";
 
 // Headers that prevent iframe embedding or break proxied body — we strip these when proxying
 const BLOCKED_RESPONSE_HEADERS = new Set([
@@ -109,7 +110,7 @@ export async function GET(req: NextRequest) {
 
     if (isHtml) {
       let html = await response.text();
-      const appOrigin = req.nextUrl.origin;
+      const appOrigin = publicRequestOrigin(req);
 
       // Drop meta CSP / frame policies that still block rendering inside our iframe
       html = html.replace(
