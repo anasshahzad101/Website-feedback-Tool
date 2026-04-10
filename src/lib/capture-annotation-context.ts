@@ -381,6 +381,21 @@ export async function captureIframeViewport(
   }
 }
 
+/** Wait until the image has decoded dimensions (avoids null from captureImageAroundPin). */
+export async function whenImageDrawable(
+  img: HTMLImageElement
+): Promise<boolean> {
+  if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+    return true;
+  }
+  try {
+    await img.decode();
+  } catch {
+    // decode() rejects for broken images; naturalWidth may still be 0
+  }
+  return img.naturalWidth > 0 && img.naturalHeight > 0;
+}
+
 export function captureImageAroundPin(
   img: HTMLImageElement,
   xPercent: number,

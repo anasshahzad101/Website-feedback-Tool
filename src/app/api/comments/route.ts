@@ -134,7 +134,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Create thread and first message in transaction
+    // Create thread and first message in transaction (no filesystem I/O here —
+    // writing PNG inside a DB transaction can time out or fail and drops the snapshot silently).
     const result = await db.$transaction(async (tx) => {
       const thread = await tx.commentThread.create({
         data: {
@@ -156,32 +157,44 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      let savedScreenshotContextPath: string | null = null;
-
-      // Update annotation to link to thread if applicable
       if (rootAnnotationId) {
-        if (
-          typeof pinContextImageBase64 === "string" &&
-          pinContextImageBase64.trim().length > 0
-        ) {
-          const saved = await saveContextPngFromBase64(pinContextImageBase64);
-          if (saved.ok) {
-            savedScreenshotContextPath = saved.relativePath;
-          }
-        }
         await tx.annotation.update({
           where: { id: rootAnnotationId },
-          data: {
-            commentThreadId: thread.id,
-            ...(savedScreenshotContextPath
-              ? { screenshotContextPath: savedScreenshotContextPath }
-              : {}),
-          },
+          data: { commentThreadId: thread.id },
         });
       }
 
-      return { thread, message, savedScreenshotContextPath };
+      return { thread, message };
     });
+
+    let savedScreenshotContextPath: string | null = null;
+    if (
+      rootAnnotationId &&
+      typeof pinContextImageBase64 === "string" &&
+      pinContextImageBase64.trim().length > 0
+    ) {
+      const saved = await saveContextPngFromBase64(pinContextImageBase64);
+      if (saved.ok) {
+        savedScreenshotContextPath = saved.relativePath;
+        try {
+          await db.annotation.update({
+            where: { id: rootAnnotationId },
+            data: { screenshotContextPath: saved.relativePath },
+          });
+        } catch (e) {
+          console.error(
+            "comments POST: failed to attach screenshotContextPath to annotation",
+            rootAnnotationId,
+            e
+          );
+        }
+      } else {
+        console.error(
+          "comments POST: saveContextPngFromBase64 failed:",
+          saved.error
+        );
+      }
+    }
 
     // Log activity
     await db.activityLog.create({
@@ -215,7 +228,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         thread: fullThread,
-        screenshotContextPath: result.savedScreenshotContextPath,
+        screenshotContextPath: savedScreenshotContextPath,
       },
       { status: 201 }
     );

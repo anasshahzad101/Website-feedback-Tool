@@ -43,6 +43,7 @@ import {
   captureIframeViewport,
   captureImageAroundPin,
   freezeIframeViewport,
+  whenImageDrawable,
 } from "@/lib/capture-annotation-context";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -606,9 +607,14 @@ export function ReviewViewer({
         uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
       }
 
-      // Pin snapshot: send with the comment POST so the server persists it in one
-      // transaction (avoids failing /api/screenshot or PATCH in the background).
+      // Pin snapshot: sent with comment POST; server writes file after the DB transaction.
       let pinContextImageBase64: string | undefined;
+      const wantedPinSnapshot =
+        !!annotationForContext &&
+        !!annotationId &&
+        ((reviewItem.type === "WEBSITE" && !!effectiveSourceUrl) ||
+          (reviewItem.type === "IMAGE" && !!effectiveFilePath));
+
       if (annotationForContext && annotationId) {
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
           if (websiteViewMode === "live") {
@@ -641,7 +647,7 @@ export function ReviewViewer({
             const img = contentRef.current?.querySelector(
               'img[alt="Website screenshot"]'
             ) as HTMLImageElement | null;
-            if (img) {
+            if (img && (await whenImageDrawable(img))) {
               const dataUrl = captureImageAroundPin(
                 img,
                 annotationForContext.xPercent,
@@ -654,7 +660,7 @@ export function ReviewViewer({
           const img = contentRef.current?.querySelector(
             'img[alt="Review image"]'
           ) as HTMLImageElement | null;
-          if (img) {
+          if (img && (await whenImageDrawable(img))) {
             const dataUrl = captureImageAroundPin(
               img,
               annotationForContext.xPercent,
@@ -725,6 +731,11 @@ export function ReviewViewer({
       clearComposeStaged();
       setSelectedAnnotationId(null);
       toast.success("Comment posted");
+      if (wantedPinSnapshot && !screenshotContextPath) {
+        toast.message(
+          "Pin location snapshot wasn’t saved. If the page or image was still loading, wait a moment and try again."
+        );
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to submit comment");
     } finally {
