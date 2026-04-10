@@ -3,10 +3,8 @@ import { db, UserRole, ProjectStatus, Prisma } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
-import { ProjectsList } from "@/components/projects/projects-list";
+import { ProjectsPageTabs } from "@/components/projects/projects-page-tabs";
 import { Plus } from "lucide-react";
 import { serializeProjectsForList } from "@/lib/projects/serialize-project-list";
 
@@ -81,7 +79,8 @@ export default async function ProjectsPage({
     Permissions.canAccessAdminPanel(userRole)
       ? db.project.findMany({
           where: { status: ProjectStatus.ARCHIVED },
-          orderBy: { archivedAt: "desc" },
+          // Use updatedAt — some production DBs lack archived_at (never migrated).
+          orderBy: { updatedAt: "desc" },
           include: projectInclude,
         })
       : Promise.resolve([]),
@@ -89,6 +88,12 @@ export default async function ProjectsPage({
 
   const activeSerialized = serializeProjectsForList(activeProjects);
   const archivedSerialized = serializeProjectsForList(archivedProjects);
+  const activePlain = JSON.parse(
+    JSON.stringify(activeSerialized)
+  ) as typeof activeSerialized;
+  const archivedPlain = JSON.parse(
+    JSON.stringify(archivedSerialized)
+  ) as typeof archivedSerialized;
 
   return (
     <div className="max-w-6xl mx-auto space-y-8">
@@ -111,46 +116,10 @@ export default async function ProjectsPage({
         )}
       </div>
 
-      <Tabs defaultValue="active" className="space-y-4">
-        <TabsList className="bg-slate-100 p-1 rounded-lg">
-          <TabsTrigger value="active" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            Active ({activeProjects.length})
-          </TabsTrigger>
-          {archivedProjects.length > 0 && (
-            <TabsTrigger value="archived" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">
-              Archived ({archivedProjects.length})
-            </TabsTrigger>
-          )}
-        </TabsList>
-
-        <TabsContent value="active" className="mt-4">
-          <Card className="border-slate-200 shadow-sm overflow-hidden">
-            <CardHeader className="border-b border-slate-100 bg-white/80">
-              <CardTitle className="text-base font-medium text-slate-900">
-                Active Projects
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-6">
-              <ProjectsList projects={activeSerialized} />
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {archivedProjects.length > 0 && (
-          <TabsContent value="archived" className="mt-4">
-            <Card className="border-slate-200 shadow-sm overflow-hidden">
-              <CardHeader className="border-b border-slate-100 bg-white/80">
-                <CardTitle className="text-base font-medium text-slate-900">
-                  Archived Projects
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-6">
-                <ProjectsList projects={archivedSerialized} isArchived />
-              </CardContent>
-            </Card>
-          </TabsContent>
-        )}
-      </Tabs>
+      <ProjectsPageTabs
+        activeSerialized={activePlain}
+        archivedSerialized={archivedPlain}
+      />
     </div>
   );
 }
