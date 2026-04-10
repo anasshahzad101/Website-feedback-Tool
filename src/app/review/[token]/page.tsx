@@ -1,6 +1,7 @@
 import { db } from "@/lib/db/client";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { GuestReviewPage } from "@/components/guest/guest-review-page";
+import { loadAnnotationsForReviewItem } from "@/lib/db/review-item-annotations";
 
 interface GuestReviewRouteProps {
   params: Promise<{ token: string }>;
@@ -22,27 +23,6 @@ export default async function GuestReviewRoute({ params }: GuestReviewRouteProps
           currentRevision: true,
           revisions: {
             orderBy: { revisionDate: "desc" },
-          },
-          annotations: {
-            select: {
-              id: true,
-              annotationType: true,
-              x: true,
-              y: true,
-              xPercent: true,
-              yPercent: true,
-              width: true,
-              height: true,
-              widthPercent: true,
-              heightPercent: true,
-              pointsJson: true,
-              targetTimestampMs: true,
-              color: true,
-              commentThreadId: true,
-              screenshotContextPath: true,
-              pinInCropX: true,
-              pinInCropY: true,
-            },
           },
           commentThreads: {
             include: {
@@ -111,11 +91,15 @@ export default async function GuestReviewRoute({ params }: GuestReviewRouteProps
   // Only use shareLink.project (which includes reviewItems); if it came from reviewItem.project it won't have reviewItems
   const project = shareLink.project ?? null;
 
-  // Attach thread status to annotations
+  const annotations = rawReviewItem
+    ? await loadAnnotationsForReviewItem(rawReviewItem.id)
+    : [];
+
+  // Attach thread status to annotations (loaded separately — tolerates DBs without pin_in_crop_*)
   const reviewItem = rawReviewItem
     ? {
         ...rawReviewItem,
-        annotations: rawReviewItem.annotations.map((ann) => {
+        annotations: annotations.map((ann) => {
           const thread = ann.commentThreadId
             ? rawReviewItem.commentThreads.find((t) => t.id === ann.commentThreadId)
             : null;

@@ -4,13 +4,18 @@ import { Permissions } from "@/lib/auth/permissions";
 import { redirect, notFound } from "next/navigation";
 import { ReviewItemClient } from "@/components/review-items/review-item-client";
 import { CommentStatus } from "@prisma/client";
+import { loadAnnotationsForReviewItem } from "@/lib/db/review-item-annotations";
 
 interface ReviewItemPageProps {
   params: Promise<{ id: string }>;
 }
 
 export default async function ReviewItemPage({ params }: ReviewItemPageProps) {
-  const { id: paramsId } = await params;
+  const resolvedParams = await params;
+  const paramsId = resolvedParams?.id?.trim();
+  if (!paramsId) {
+    notFound();
+  }
   const session = await auth();
   if (!session?.user) {
     redirect("/login");
@@ -67,30 +72,8 @@ export default async function ReviewItemPage({ params }: ReviewItemPageProps) {
     redirect("/dashboard");
   }
 
-  // Fetch annotations with thread info
-  const annotations = await db.annotation.findMany({
-    where: { reviewItemId: paramsId },
-    select: {
-      id: true,
-      annotationType: true,
-      x: true,
-      y: true,
-      xPercent: true,
-      yPercent: true,
-      width: true,
-      height: true,
-      widthPercent: true,
-      heightPercent: true,
-      pointsJson: true,
-      targetTimestampMs: true,
-      screenshotContextPath: true,
-      pinInCropX: true,
-      pinInCropY: true,
-      color: true,
-      commentThreadId: true,
-    },
-    orderBy: { createdAt: "asc" },
-  });
+  // Fetch annotations with thread info (tolerates DBs missing pin_in_crop_* columns)
+  const annotations = await loadAnnotationsForReviewItem(paramsId);
 
   const annotationsWithStatus = annotations.map((ann) => {
     const thread = ann.commentThreadId
