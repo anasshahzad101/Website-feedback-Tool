@@ -277,6 +277,10 @@ model Annotation {
   targetTimestampMs     Int?           @map("target_timestamp_ms")
   viewportMetaJson      String?        @map("viewport_meta_json")
   screenshotContextPath String?        @map("screenshot_context_path")
+  /** 0–1: pin X position within the context crop image (for correct marker overlay). */
+  pinInCropX            Float?         @map("pin_in_crop_x")
+  /** 0–1: pin Y position within the context crop image. */
+  pinInCropY            Float?         @map("pin_in_crop_y")
   color                 String         @default("#3b82f6")
   createdByUserId       String?        @map("created_by_user_id")
   createdByGuestId      String?        @map("created_by_guest_id")

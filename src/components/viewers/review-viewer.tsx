@@ -51,6 +51,7 @@ import {
   captureImageAroundPin,
   freezeIframeViewport,
   whenImageDrawable,
+  type PinContextImageResult,
 } from "@/lib/capture-annotation-context";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -116,17 +117,32 @@ interface ReviewViewerProps {
   userRole: ProjectRole | null;
 }
 
-/** Pin-centered client crops are stored as `/screenshots/context-*`; full-page Microlink shots use `screenshot-*`. */
-function contextPinMarkerPercents(
-  screenshotContextPath: string | null | undefined,
-  xPercent: number | undefined,
-  yPercent: number | undefined
-): { left: number; top: number } {
-  const path = (screenshotContextPath ?? "").trim();
+/** Marker on the context screenshot: prefer stored pin-in-crop fractions; else legacy heuristics for old data. */
+function contextMarkerPercentsFromAnnotation(ann: {
+  screenshotContextPath?: string | null;
+  xPercent: number;
+  yPercent: number;
+  pinInCropX?: number | null;
+  pinInCropY?: number | null;
+}): { left: number; top: number } {
+  const px = ann.pinInCropX;
+  const py = ann.pinInCropY;
+  if (
+    px != null &&
+    py != null &&
+    Number.isFinite(px) &&
+    Number.isFinite(py)
+  ) {
+    return {
+      left: Math.min(100, Math.max(0, px * 100)),
+      top: Math.min(100, Math.max(0, py * 100)),
+    };
+  }
+  const path = (ann.screenshotContextPath ?? "").trim();
   const isPinCenteredCrop = /\/screenshots\/context-/i.test(path);
   if (isPinCenteredCrop) return { left: 50, top: 50 };
-  const x = (xPercent ?? 0.5) * 100;
-  const y = (yPercent ?? 0.5) * 100;
+  const x = (ann.xPercent ?? 0.5) * 100;
+  const y = (ann.yPercent ?? 0.5) * 100;
   return { left: x, top: y };
 }
 
@@ -268,7 +284,7 @@ export function ReviewViewer({
   /** Live website: viewport capture started when the pin is placed; await on submit. */
   const liveContextInFlightRef = useRef<{
     pinClientId: string;
-    promise: Promise<string | null>;
+    promise: Promise<PinContextImageResult | null>;
   } | null>(null);
 
   const getLiveWebsiteIframe = useCallback((): HTMLIFrameElement | null => {
@@ -527,7 +543,7 @@ export function ReviewViewer({
       ) {
         const pinId = annotation.id;
         const pinFocus = { x: annotation.x, y: annotation.y };
-        const promise = new Promise<string | null>((resolve) => {
+        const promise = new Promise<PinContextImageResult | null>((resolve) => {
           requestAnimationFrame(() => {
             requestAnimationFrame(async () => {
               try {
@@ -537,12 +553,20 @@ export function ReviewViewer({
                   return;
                 }
                 const frozen = freezeIframeViewport(iframe);
-                const url = await captureIframeViewport(iframe, pinFocus, {
+                let result = await captureIframeViewport(iframe, pinFocus, {
                   allowHeavyFallback: true,
                   preferAccuracy: true,
                   frozen,
                 });
-                resolve(url);
+                if (!result) {
+                  await new Promise((r) => setTimeout(r, 500));
+                  result = await captureIframeViewport(iframe, pinFocus, {
+                    allowHeavyFallback: true,
+                    preferAccuracy: true,
+                    frozen: freezeIframeViewport(iframe),
+                  });
+                }
+                resolve(result);
               } catch {
                 resolve(null);
               }
@@ -552,7 +576,7 @@ export function ReviewViewer({
         liveContextInFlightRef.current = { pinClientId: pinId, promise };
       }
     },
-    [reviewItem.type, websiteViewMode, effectiveSourceUrl]
+    [reviewItem.type, websiteViewMode, effectiveSourceUrl, getLiveWebsiteIframe]
   );
 
   const handleAnnotationSelected = useCallback(
@@ -626,6 +650,8 @@ export function ReviewViewer({
 
       // Pin snapshot: sent with comment POST; server writes file after the DB transaction.
       let pinContextImageBase64: string | undefined;
+      let pinInCropX: number | undefined;
+      let pinInCropY: number | undefined;
       const wantedPinSnapshot =
         !!annotationForContext &&
         !!annotationId &&
@@ -636,16 +662,16 @@ export function ReviewViewer({
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
           if (websiteViewMode === "live") {
             const iframe = getLiveWebsiteIframe();
-            let dataUrl: string | null = null;
+            let liveCapture: PinContextImageResult | null = null;
             const inFlight = liveContextInFlightRef.current;
             // Await any in-flight capture for this session — only one pending pin at a time;
             // strict pinClientId match skipped snapshots when ids ever diverged.
             if (inFlight) {
-              dataUrl = await withTimeout(inFlight.promise, 35000);
+              liveCapture = await withTimeout(inFlight.promise, 35000);
             }
             liveContextInFlightRef.current = null;
-            if (!dataUrl && iframe) {
-              dataUrl = await withTimeout(
+            if (!liveCapture && iframe) {
+              liveCapture = await withTimeout(
                 captureIframeViewport(
                   iframe,
                   {
@@ -661,18 +687,44 @@ export function ReviewViewer({
                 25000
               );
             }
-            if (dataUrl) pinContextImageBase64 = dataUrl;
+            if (!liveCapture && iframe) {
+              await new Promise((r) => setTimeout(r, 300));
+              liveCapture = await withTimeout(
+                captureIframeViewport(
+                  iframe,
+                  {
+                    x: annotationForContext.x,
+                    y: annotationForContext.y,
+                  },
+                  {
+                    allowHeavyFallback: true,
+                    preferAccuracy: true,
+                    frozen: freezeIframeViewport(iframe),
+                  }
+                ),
+                15000
+              );
+            }
+            if (liveCapture) {
+              pinContextImageBase64 = liveCapture.dataUrl;
+              pinInCropX = liveCapture.pinInCropX;
+              pinInCropY = liveCapture.pinInCropY;
+            }
           } else {
             const img = contentRef.current?.querySelector(
               'img[alt="Website screenshot"]'
             ) as HTMLImageElement | null;
             if (img && (await whenImageDrawable(img))) {
-              const dataUrl = captureImageAroundPin(
+              const cap = captureImageAroundPin(
                 img,
                 annotationForContext.xPercent,
                 annotationForContext.yPercent
               );
-              if (dataUrl) pinContextImageBase64 = dataUrl;
+              if (cap) {
+                pinContextImageBase64 = cap.dataUrl;
+                pinInCropX = cap.pinInCropX;
+                pinInCropY = cap.pinInCropY;
+              }
             }
           }
         } else if (reviewItem.type === "IMAGE" && effectiveFilePath) {
@@ -680,12 +732,16 @@ export function ReviewViewer({
             'img[alt="Review image"]'
           ) as HTMLImageElement | null;
           if (img && (await whenImageDrawable(img))) {
-            const dataUrl = captureImageAroundPin(
+            const cap = captureImageAroundPin(
               img,
               annotationForContext.xPercent,
               annotationForContext.yPercent
             );
-            if (dataUrl) pinContextImageBase64 = dataUrl;
+            if (cap) {
+              pinContextImageBase64 = cap.dataUrl;
+              pinInCropX = cap.pinInCropX;
+              pinInCropY = cap.pinInCropY;
+            }
           }
         }
       } else {
@@ -702,7 +758,12 @@ export function ReviewViewer({
           initialMessage: newComment.trim(),
           ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
           ...(pinContextImageBase64
-            ? { pinContextImageBase64 }
+            ? {
+                pinContextImageBase64,
+                ...(pinInCropX != null && pinInCropY != null
+                  ? { pinInCropX, pinInCropY }
+                  : {}),
+              }
             : {}),
         }),
       });
@@ -726,10 +787,13 @@ export function ReviewViewer({
         }
         throw new Error(msg);
       }
-      const { thread, screenshotContextPath } = commentPayload as {
-        thread: CommentThread;
-        screenshotContextPath?: string | null;
-      };
+      const { thread, screenshotContextPath, pinInCropX: resPicX, pinInCropY: resPicY } =
+        commentPayload as {
+          thread: CommentThread;
+          screenshotContextPath?: string | null;
+          pinInCropX?: number | null;
+          pinInCropY?: number | null;
+        };
       setThreads((prev) => [thread, ...prev]);
       setAnnotations((prev) =>
         prev.map((a) =>
@@ -740,6 +804,12 @@ export function ReviewViewer({
                 commentThread: { id: thread.id, status: thread.status },
                 ...(screenshotContextPath
                   ? { screenshotContextPath }
+                  : {}),
+                ...(resPicX != null &&
+                resPicY != null &&
+                Number.isFinite(resPicX) &&
+                Number.isFinite(resPicY)
+                  ? { pinInCropX: resPicX, pinInCropY: resPicY }
                   : {}),
               }
             : a
@@ -1142,15 +1212,13 @@ export function ReviewViewer({
 
   const detailContextMarkers = useMemo(() => {
     if (!detailAnnotation) return { left: 50, top: 50 };
-    return contextPinMarkerPercents(
-      detailAnnotation.screenshotContextPath,
-      detailAnnotation.xPercent,
-      detailAnnotation.yPercent
-    );
+    return contextMarkerPercentsFromAnnotation(detailAnnotation);
   }, [
     detailAnnotation?.screenshotContextPath,
     detailAnnotation?.xPercent,
     detailAnnotation?.yPercent,
+    detailAnnotation?.pinInCropX,
+    detailAnnotation?.pinInCropY,
   ]);
 
   const detailPinNumber = detailAnnotation

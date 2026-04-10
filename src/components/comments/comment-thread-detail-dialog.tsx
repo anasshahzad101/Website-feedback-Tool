@@ -78,7 +78,10 @@ export function CommentThreadDetailDialog({
   pinNumber: number;
   pinColor: string;
   screenshotContextPath?: string | null;
-  /** Pin position on the context image (percent). Pin-centered crops use ~50/50. */
+  /**
+   * Pin position on the context image (percent).
+   * ReviewViewer sets these from `annotation.pinInCropX/Y` (×100) when saved; otherwise legacy 50/50 for context crops or x/yPercent for full-page shots.
+   */
   contextMarkerLeftPercent?: number;
   contextMarkerTopPercent?: number;
   onOpenScreenshot: (fullUrl: string) => void;

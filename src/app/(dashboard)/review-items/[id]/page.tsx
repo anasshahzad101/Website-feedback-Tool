@@ -84,6 +84,8 @@ export default async function ReviewItemPage({ params }: ReviewItemPageProps) {
       pointsJson: true,
       targetTimestampMs: true,
       screenshotContextPath: true,
+      pinInCropX: true,
+      pinInCropY: true,
       color: true,
       commentThreadId: true,
     },

@@ -3,6 +3,19 @@
 import { domToPng } from "modern-screenshot";
 import html2canvas from "html2canvas";
 
+function clamp01(n: number): number {
+  if (!Number.isFinite(n)) return 0.5;
+  return Math.min(1, Math.max(0, n));
+}
+
+/** Result of capturing a pin-centered context image (live iframe or static raster). */
+export type PinContextImageResult = {
+  dataUrl: string;
+  /** 0–1: pin X within the output image (after crop / downscale). */
+  pinInCropX: number;
+  pinInCropY: number;
+};
+
 /** Pin context images: prefer at least this many pixels per side when the source allows. */
 const MIN_CONTEXT_EDGE = 1000;
 /** Hard cap on output edge (keeps PNG payloads reasonable for POST + 6MB server limit). */
@@ -163,14 +176,19 @@ async function focusCropAroundPin(
   viewWCss: number,
   viewHCss: number,
   focusFraction = 0.94
-): Promise<string> {
+): Promise<PinContextImageResult> {
+  const fallback = (): PinContextImageResult => ({
+    dataUrl,
+    pinInCropX: 0.5,
+    pinInCropY: 0.5,
+  });
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const iw = img.naturalWidth;
       const ih = img.naturalHeight;
       if (!iw || !ih) {
-        resolve(dataUrl);
+        resolve(fallback());
         return;
       }
       const sx = iw / Math.max(1, viewWCss);
@@ -184,8 +202,11 @@ async function focusCropAroundPin(
       x0 = Math.max(0, Math.min(x0, iw - targetW));
       y0 = Math.max(0, Math.min(y0, ih - targetH));
 
-      const tw = Math.round(targetW);
-      const th = Math.round(targetH);
+      const tw = Math.max(1, Math.round(targetW));
+      const th = Math.max(1, Math.round(targetH));
+      const pinInCropX = clamp01((cx - x0) / tw);
+      const pinInCropY = clamp01((cy - y0) / th);
+
       let outW = tw;
       let outH = th;
       if (outW > MAX_CONTEXT_EDGE || outH > MAX_CONTEXT_EDGE) {
@@ -199,13 +220,17 @@ async function focusCropAroundPin(
       c.height = outH;
       const ctx = c.getContext("2d");
       if (!ctx) {
-        resolve(dataUrl);
+        resolve(fallback());
         return;
       }
       ctx.drawImage(img, x0, y0, tw, th, 0, 0, outW, outH);
-      resolve(c.toDataURL("image/png", 0.88));
+      resolve({
+        dataUrl: c.toDataURL("image/png", 0.88),
+        pinInCropX,
+        pinInCropY,
+      });
     };
-    img.onerror = () => resolve(dataUrl);
+    img.onerror = () => resolve(fallback());
     img.src = dataUrl;
   });
 }
@@ -318,7 +343,7 @@ export async function captureIframeViewport(
   iframe: HTMLIFrameElement,
   pin?: ViewportPinFocus,
   options?: CaptureIframeViewportOptions
-): Promise<string | null> {
+): Promise<PinContextImageResult | null> {
   const doc = iframe.contentDocument;
   const win = iframe.contentWindow;
   if (!doc?.body || !win) return null;
@@ -372,22 +397,29 @@ export async function captureIframeViewport(
 
     if (!dataUrl) return null;
 
+    let pinInCropX = 0.5;
+    let pinInCropY = 0.5;
+
     if (pin) {
       // Pins are placed using coordinates in the parent layout box that matches the
       // iframe element size — not necessarily vt.viewW/H when scroll lives on an inner
       // div (smaller client rect). Scale crop to the iframe box so the pin stays centered.
       const pinViewW = Math.max(1, Math.round(iframe.clientWidth || vt.viewW));
       const pinViewH = Math.max(1, Math.round(iframe.clientHeight || vt.viewH));
-      dataUrl = await focusCropAroundPin(
+      const cropped = await focusCropAroundPin(
         dataUrl,
         pin.x,
         pin.y,
         pinViewW,
         pinViewH
       );
+      dataUrl = cropped.dataUrl;
+      pinInCropX = cropped.pinInCropX;
+      pinInCropY = cropped.pinInCropY;
     }
 
-    return await downscaleDataUrl(dataUrl);
+    const outUrl = await downscaleDataUrl(dataUrl);
+    return { dataUrl: outUrl, pinInCropX, pinInCropY };
   } catch (e) {
     console.warn("captureIframeViewport failed", e);
     return null;
@@ -413,7 +445,7 @@ export function captureImageAroundPin(
   img: HTMLImageElement,
   xPercent: number,
   yPercent: number
-): string | null {
+): PinContextImageResult | null {
   const nw = img.naturalWidth;
   const nh = img.naturalHeight;
   if (!nw || !nh) return null;
@@ -427,6 +459,11 @@ export function captureImageAroundPin(
   let sy = Math.round(cy - cropH / 2);
   sx = Math.max(0, Math.min(sx, nw - cropW));
   sy = Math.max(0, Math.min(sy, nh - cropH));
+
+  const cw = Math.max(1, cropW);
+  const ch = Math.max(1, cropH);
+  const pinInCropX = clamp01((cx - sx) / cw);
+  const pinInCropY = clamp01((cy - sy) / ch);
 
   let outW = cropW;
   let outH = cropH;
@@ -443,7 +480,11 @@ export function captureImageAroundPin(
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, outW, outH);
-    return canvas.toDataURL("image/png", 0.88);
+    return {
+      dataUrl: canvas.toDataURL("image/png", 0.88),
+      pinInCropX,
+      pinInCropY,
+    };
   } catch {
     return null;
   }

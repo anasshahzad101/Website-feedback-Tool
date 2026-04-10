@@ -103,6 +103,8 @@ export async function POST(request: NextRequest) {
       initialMessage,
       attachments,
       pinContextImageBase64,
+      pinInCropX,
+      pinInCropY,
     } = validated.data;
 
     // Check access
@@ -168,6 +170,8 @@ export async function POST(request: NextRequest) {
     });
 
     let savedScreenshotContextPath: string | null = null;
+    let savedPinInCropX: number | null = null;
+    let savedPinInCropY: number | null = null;
     if (
       rootAnnotationId &&
       typeof pinContextImageBase64 === "string" &&
@@ -176,11 +180,25 @@ export async function POST(request: NextRequest) {
       const saved = await saveContextPngFromBase64(pinContextImageBase64);
       if (saved.ok) {
         savedScreenshotContextPath = saved.relativePath;
+        const hasCropCoords =
+          typeof pinInCropX === "number" &&
+          typeof pinInCropY === "number" &&
+          Number.isFinite(pinInCropX) &&
+          Number.isFinite(pinInCropY);
         try {
           await db.annotation.update({
             where: { id: rootAnnotationId },
-            data: { screenshotContextPath: saved.relativePath },
+            data: {
+              screenshotContextPath: saved.relativePath,
+              ...(hasCropCoords
+                ? { pinInCropX, pinInCropY }
+                : {}),
+            },
           });
+          if (hasCropCoords) {
+            savedPinInCropX = pinInCropX;
+            savedPinInCropY = pinInCropY;
+          }
         } catch (e) {
           console.error(
             "comments POST: failed to attach screenshotContextPath to annotation",
@@ -229,6 +247,8 @@ export async function POST(request: NextRequest) {
       {
         thread: fullThread,
         screenshotContextPath: savedScreenshotContextPath,
+        pinInCropX: savedPinInCropX,
+        pinInCropY: savedPinInCropY,
       },
       { status: 201 }
     );

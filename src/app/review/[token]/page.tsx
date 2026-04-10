@@ -40,6 +40,8 @@ export default async function GuestReviewRoute({ params }: GuestReviewRouteProps
               color: true,
               commentThreadId: true,
               screenshotContextPath: true,
+              pinInCropX: true,
+              pinInCropY: true,
             },
           },
           commentThreads: {

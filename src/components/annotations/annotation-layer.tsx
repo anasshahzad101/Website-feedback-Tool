@@ -33,6 +33,9 @@ export interface Annotation {
   pointsJson?: string | null;
   // Optional screenshot context for this annotation (used in comment sidebar)
   screenshotContextPath?: string | null;
+  /** 0–1: pin X/Y within the context crop image (when screenshotContextPath is a pin crop). */
+  pinInCropX?: number | null;
+  pinInCropY?: number | null;
 }
 
 interface AnnotationLayerProps {

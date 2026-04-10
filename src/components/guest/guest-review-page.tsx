@@ -35,6 +35,8 @@ interface GuestReviewPageProps {
       color: string;
       commentThreadId: string | null;
       screenshotContextPath?: string | null;
+      pinInCropX?: number | null;
+      pinInCropY?: number | null;
       commentThread?: { id: string; status: CommentStatus } | null;
     }>;
     commentThreads: Array<{

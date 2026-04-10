@@ -17,6 +17,9 @@ export const commentThreadSchema = z
     attachments: z.array(commentAttachmentSchema).max(8).optional(),
     /** PNG data URL or base64 — saved on the root annotation with the thread (same auth as comment). */
     pinContextImageBase64: z.string().max(12_000_000).optional(),
+    /** 0–1: pin position within the cropped context image (stored on annotation with screenshot). */
+    pinInCropX: z.number().min(0).max(1).optional(),
+    pinInCropY: z.number().min(0).max(1).optional(),
   })
   .superRefine((data, ctx) => {
     const hasText = (data.initialMessage ?? "").trim().length > 0;
