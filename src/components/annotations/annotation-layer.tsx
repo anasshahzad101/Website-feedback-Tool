@@ -3,6 +3,7 @@
 import { useRef, useCallback, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { CommentStatus, AnnotationType } from "@prisma/client";
+import { cn } from "@/lib/utils";
 
 export interface NewAnnotation {
   id: string;
@@ -44,6 +45,7 @@ interface AnnotationLayerProps {
   contentHeight: number;
   /** When false, the layer does not capture pointer events (e.g. browse mode overlay). */
   interactive?: boolean;
+  className?: string;
 }
 
 const statusColors: Record<CommentStatus, string> = {
@@ -63,6 +65,7 @@ export function AnnotationLayer({
   contentWidth,
   contentHeight,
   interactive = true,
+  className,
 }: AnnotationLayerProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -110,7 +113,7 @@ export function AnnotationLayer({
   return (
     <svg
       ref={svgRef}
-      className="absolute inset-0"
+      className={cn("absolute inset-0", className)}
       style={{
         width: svgWidth,
         height: svgHeight,

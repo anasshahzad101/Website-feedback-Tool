@@ -173,6 +173,22 @@ function authorInitialsFromFirstMessage(
   return parts[0]!.slice(0, 2).toUpperCase();
 }
 
+function normalizeWebsiteUrl(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  let candidate = trimmed;
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = candidate.startsWith("//") ? `https:${candidate}` : `https://${candidate}`;
+  }
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
 export function ReviewViewer({
   reviewItem,
   annotations: initialAnnotations,
@@ -264,26 +280,28 @@ export function ReviewViewer({
   // For websites, show an "annotate / browse" mode toggle
   const showModeToggle = isWebsite && !!effectiveSourceUrl;
 
+  const remeasureContent = useCallback(() => {
+    const el = contentRef.current;
+    const child = el?.firstElementChild as HTMLElement | null;
+    if (!child) return;
+    const rect = child.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      setContentDimensions({
+        width: rect.width / zoom,
+        height: rect.height / zoom,
+      });
+    }
+  }, [zoom]);
+
   useEffect(() => {
     const el = contentRef.current;
     if (!el) return;
-    const update = () => {
-      const child = el.firstElementChild as HTMLElement | null;
-      if (child) {
-        const rect = child.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          setContentDimensions({
-            width: rect.width / zoom,
-            height: rect.height / zoom,
-          });
-        }
-      }
-    };
+    const update = () => remeasureContent();
     update();
     const obs = new ResizeObserver(update);
     obs.observe(el);
     return () => obs.disconnect();
-  }, [zoom, displayRevision]);
+  }, [zoom, displayRevision, remeasureContent]);
 
   const canUploadAttachments = user.role !== "GUEST";
 
@@ -1217,15 +1235,12 @@ export function ReviewViewer({
                 type={reviewItem.type}
                 sourceUrl={effectiveSourceUrl}
                 filePath={effectiveFilePath}
-                onCapture={captureScreenshot}
-                capturing={capturing}
-                annotateMode={annotationLayerActive}
                 websiteViewMode={websiteViewMode}
-                onWebsiteViewModeChange={setWebsiteViewMode}
+                onRasterLayoutChange={remeasureContent}
               />
-              {/* Annotation layer — only active in annotate mode */}
               {annotationLayerActive && (
                 <AnnotationLayer
+                  className="z-[5]"
                   annotations={annotationsToShow}
                   selectedAnnotationId={selectedAnnotationId}
                   onAnnotationCreated={handleAnnotationCreated}
@@ -1235,18 +1250,79 @@ export function ReviewViewer({
                   contentHeight={contentDimensions.height}
                 />
               )}
-              {/* Show existing pins even in browse mode (read-only, non-interactive so iframe receives clicks) */}
               {!annotationLayerActive && annotationsToShow.length > 0 && (
-                <AnnotationLayer
-                  annotations={annotationsToShow}
-                  selectedAnnotationId={selectedAnnotationId}
-                  onAnnotationCreated={() => {}}
-                  onAnnotationSelected={handleAnnotationSelected}
-                  zoom={1}
-                  contentWidth={contentDimensions.width}
-                  contentHeight={contentDimensions.height}
-                  interactive={false}
-                />
+                <div className="pointer-events-none absolute inset-0 z-[5]">
+                  <AnnotationLayer
+                    annotations={annotationsToShow}
+                    selectedAnnotationId={selectedAnnotationId}
+                    onAnnotationCreated={() => {}}
+                    onAnnotationSelected={handleAnnotationSelected}
+                    zoom={1}
+                    contentWidth={contentDimensions.width}
+                    contentHeight={contentDimensions.height}
+                    interactive={false}
+                  />
+                </div>
+              )}
+              {isWebsite && effectiveSourceUrl && (
+                <div className="pointer-events-none absolute inset-0 z-[30]">
+                  <div className="pointer-events-auto absolute top-2 right-2 flex flex-wrap items-center justify-end gap-2 max-w-[calc(100%-1rem)]">
+                    {websiteViewMode === "live" ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setWebsiteViewMode("screenshot")}
+                          className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
+                        >
+                          <Camera className="w-3 h-3 shrink-0" />
+                          Screenshot mode
+                        </button>
+                        <a
+                          href={
+                            normalizeWebsiteUrl(effectiveSourceUrl) ??
+                            effectiveSourceUrl
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3 h-3 shrink-0" />
+                          Open site
+                        </a>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setWebsiteViewMode("live")}
+                          className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3 h-3 shrink-0" />
+                          Live mode
+                        </button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={captureScreenshot}
+                          disabled={capturing}
+                          className="h-7 text-xs shadow-sm"
+                        >
+                          {capturing ? (
+                            <>
+                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                              Capturing…
+                            </>
+                          ) : (
+                            <>
+                              <Camera className="w-3 h-3 mr-1" />
+                              Capture
+                            </>
+                          )}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -1689,22 +1765,6 @@ export function ReviewViewer({
   );
 }
 
-function normalizeWebsiteUrl(url: string): string | null {
-  const trimmed = url.trim();
-  if (!trimmed) return null;
-  let candidate = trimmed;
-  if (!/^https?:\/\//i.test(candidate)) {
-    candidate = candidate.startsWith("//") ? `https:${candidate}` : `https://${candidate}`;
-  }
-  try {
-    const u = new URL(candidate);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return u.href;
-  } catch {
-    return null;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // ContentDisplay — renders the actual content to review
 // ---------------------------------------------------------------------------
@@ -1712,20 +1772,14 @@ function ContentDisplay({
   type,
   sourceUrl,
   filePath,
-  onCapture,
-  capturing,
-  annotateMode,
   websiteViewMode = "live",
-  onWebsiteViewModeChange,
+  onRasterLayoutChange,
 }: {
   type: ReviewItemType;
   sourceUrl: string | null;
   filePath: string | null;
-  onCapture: () => void;
-  capturing: boolean;
-  annotateMode: boolean;
   websiteViewMode?: "live" | "screenshot";
-  onWebsiteViewModeChange?: (mode: "live" | "screenshot") => void;
+  onRasterLayoutChange?: () => void;
 }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   // Set iframe src only after mount so the request runs in the browser (avoids SSR issues).
@@ -1760,26 +1814,6 @@ function ContentDisplay({
     if (viewMode === "live") {
       return (
         <div className="relative w-full min-h-[900px] bg-white" style={{ height: "max(900px, 100vh)" }}>
-          {/* Top-right controls */}
-          <div className="absolute top-2 right-2 z-20 flex items-center gap-2">
-            <button
-              onClick={() => onWebsiteViewModeChange?.("screenshot")}
-              className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
-            >
-              <Camera className="w-3 h-3" />
-              Screenshot mode
-            </button>
-            <a
-              href={normalizeWebsiteUrl(sourceUrl) ?? sourceUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
-            >
-              <ExternalLink className="w-3 h-3" />
-              Open site
-            </a>
-          </div>
-
           {/* Loading overlay — minimal, clears once iframe loads */}
           {!iframeLoaded && iframeSrc && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 backdrop-blur-[1px]">
@@ -1825,65 +1859,28 @@ function ContentDisplay({
       );
     }
 
-    // Screenshot mode
+    // Screenshot mode (mode / capture controls live in ReviewViewer above the annotation SVG)
     return (
       <div className="relative w-full min-h-[900px] bg-white">
-        <div className="absolute top-2 right-2 z-20 flex items-center gap-2">
-          <button
-            onClick={() => onWebsiteViewModeChange?.("live")}
-            className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
-          >
-            <ExternalLink className="w-3 h-3" />
-            Live mode
-          </button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={onCapture}
-            disabled={capturing}
-            className="h-7 text-xs shadow-sm"
-          >
-            {capturing ? (
-              <>
-                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                Capturing…
-              </>
-            ) : (
-              <>
-                <Camera className="w-3 h-3 mr-1" />
-                Capture
-              </>
-            )}
-          </Button>
-        </div>
         {filePath ? (
           <img
             src={`/uploads${filePath}`}
             alt="Website screenshot"
             className="w-full h-auto block"
             draggable={false}
+            onLoad={onRasterLayoutChange}
           />
         ) : (
-          <div className="flex items-center justify-center min-h-[600px]">
-            <div className="text-center space-y-4">
+          <div className="flex items-center justify-center min-h-[600px] px-4">
+            <div className="text-center space-y-4 max-w-md">
               <Camera className="w-10 h-10 mx-auto opacity-30" />
               <div>
                 <p className="font-medium">No screenshot yet</p>
-                <p className="text-sm text-muted-foreground mt-1">{sourceUrl}</p>
+                <p className="text-sm text-muted-foreground mt-1 break-all">{sourceUrl}</p>
+                <p className="text-sm text-muted-foreground mt-3">
+                  Use <strong>Capture</strong> (top right) to save a screenshot.
+                </p>
               </div>
-              <Button onClick={onCapture} disabled={capturing}>
-                {capturing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Capturing…
-                  </>
-                ) : (
-                  <>
-                    <Camera className="w-4 h-4 mr-2" />
-                    Capture Screenshot
-                  </>
-                )}
-              </Button>
             </div>
           </div>
         )}
@@ -1900,6 +1897,7 @@ function ContentDisplay({
         className="max-w-none block"
         draggable={false}
         style={{ display: "block" }}
+        onLoad={onRasterLayoutChange}
       />
     );
   }
