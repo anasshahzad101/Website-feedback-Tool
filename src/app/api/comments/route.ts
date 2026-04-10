@@ -5,6 +5,9 @@ import { Permissions } from "@/lib/auth/permissions";
 import { commentThreadSchema, commentReplySchema, updateThreadStatusSchema } from "@/lib/validations/comment";
 import { saveContextPngFromBase64 } from "@/lib/server/save-context-screenshot";
 
+/** Large pin screenshots + DB + disk I/O can exceed default serverless limits. */
+export const maxDuration = 60;
+
 // GET /api/comments - List comment threads
 export async function GET(request: NextRequest) {
   try {

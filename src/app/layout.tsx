@@ -5,6 +5,9 @@ import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 import { getPublicBranding } from "@/lib/app-settings";
 
+/** Avoid 504 on cold starts when DB/auth is slow (Vercel caps by plan). */
+export const maxDuration = 60;
+
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
 
 export async function generateMetadata(): Promise<Metadata> {

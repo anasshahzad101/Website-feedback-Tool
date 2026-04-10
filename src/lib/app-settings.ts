@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { db } from "@/lib/db/client";
 import { DEFAULT_BRAND_NAME } from "@/lib/brand";
 
@@ -62,7 +63,7 @@ export async function getOrCreateAppSettings() {
   return row;
 }
 
-export async function getPublicBranding(): Promise<PublicBranding> {
+async function loadPublicBranding(): Promise<PublicBranding> {
   try {
     const row = await getOrCreateAppSettings();
     return mergeBrandingFromRow(row);
@@ -75,6 +76,9 @@ export async function getPublicBranding(): Promise<PublicBranding> {
     };
   }
 }
+
+/** One DB round-trip per request (dedupes `generateMetadata` + root layout). */
+export const getPublicBranding = cache(loadPublicBranding);
 
 export async function needsInitialSetup(): Promise<boolean> {
   try {
