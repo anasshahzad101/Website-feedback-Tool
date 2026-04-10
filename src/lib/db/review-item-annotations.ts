@@ -30,7 +30,7 @@ export type AnnotationForReviewItem = Prisma.AnnotationGetPayload<{
   select: typeof annotationSelectWithPins;
 }>;
 
-function isMissingAnnotationPinColumnsError(e: unknown): boolean {
+export function isMissingAnnotationPinColumnsError(e: unknown): boolean {
   if (typeof e === "object" && e !== null && "code" in e) {
     const code = (e as { code?: string }).code;
     if (code === "P2022") return true;

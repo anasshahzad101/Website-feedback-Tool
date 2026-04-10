@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { AnnotationType } from "@prisma/client";
 
+const coord = z.number().finite();
+const coord01 = z.number().finite().min(0).max(1);
+
 export const pointSchema = z.object({
-  x: z.number(),
-  y: z.number(),
+  x: coord,
+  y: coord,
 });
 
 export const annotationSchema = z.object({
@@ -16,16 +19,16 @@ export const annotationSchema = z.object({
     z.string().uuid().optional()
   ),
   annotationType: z.nativeEnum(AnnotationType),
-  x: z.number(),
-  y: z.number(),
-  xPercent: z.number().min(0).max(1),
-  yPercent: z.number().min(0).max(1),
-  width: z.number().optional(),
-  height: z.number().optional(),
-  widthPercent: z.number().min(0).max(1).optional(),
-  heightPercent: z.number().min(0).max(1).optional(),
+  x: coord,
+  y: coord,
+  xPercent: coord01,
+  yPercent: coord01,
+  width: coord.optional(),
+  height: coord.optional(),
+  widthPercent: coord01.optional(),
+  heightPercent: coord01.optional(),
   pointsJson: z.string().optional(),
-  targetFrame: z.number().optional(),
+  targetFrame: z.number().int().optional(),
   targetTimestampMs: z.number().optional(),
   viewportMetaJson: z.string().optional(),
   screenshotContextPath: z.string().optional(),

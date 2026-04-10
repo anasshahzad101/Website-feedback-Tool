@@ -4,6 +4,7 @@ import { db, UserRole, ProjectRole, ActivityActionType, CommentStatus } from "@/
 import { Permissions } from "@/lib/auth/permissions";
 import { commentThreadSchema, commentReplySchema, updateThreadStatusSchema } from "@/lib/validations/comment";
 import { saveContextPngFromBase64 } from "@/lib/server/save-context-screenshot";
+import { isMissingAnnotationPinColumnsError } from "@/lib/db/review-item-annotations";
 
 /** Large pin screenshots + DB + disk I/O can exceed default serverless limits. */
 export const maxDuration = 60;
@@ -197,17 +198,34 @@ export async function POST(request: NextRequest) {
                 ? { pinInCropX, pinInCropY }
                 : {}),
             },
+            select: { id: true },
           });
           if (hasCropCoords) {
             savedPinInCropX = pinInCropX;
             savedPinInCropY = pinInCropY;
           }
         } catch (e) {
-          console.error(
-            "comments POST: failed to attach screenshotContextPath to annotation",
-            rootAnnotationId,
-            e
-          );
+          if (hasCropCoords && isMissingAnnotationPinColumnsError(e)) {
+            try {
+              await db.annotation.update({
+                where: { id: rootAnnotationId },
+                data: { screenshotContextPath: saved.relativePath },
+                select: { id: true },
+              });
+            } catch (e2) {
+              console.error(
+                "comments POST: failed to attach screenshot (fallback)",
+                rootAnnotationId,
+                e2
+              );
+            }
+          } else {
+            console.error(
+              "comments POST: failed to attach screenshotContextPath to annotation",
+              rootAnnotationId,
+              e
+            );
+          }
         }
       } else {
         console.error(

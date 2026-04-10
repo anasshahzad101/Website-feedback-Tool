@@ -2,6 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db, UserRole, ProjectRole, ActivityActionType } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
+import { annotationScalarSelect } from "@/lib/db/annotation-api-select";
+
+const annotationAuthSelect = {
+  id: true,
+  createdByUserId: true,
+  commentThreadId: true,
+  reviewItemId: true,
+  reviewItem: {
+    include: {
+      project: {
+        include: { members: true },
+      },
+    },
+  },
+} as const;
 
 // PATCH /api/annotations/[id] - Update lightweight annotation fields
 export async function PATCH(
@@ -27,13 +42,7 @@ export async function PATCH(
 
     const annotation = await db.annotation.findUnique({
       where: { id },
-      include: {
-        reviewItem: {
-          include: {
-            project: { include: { members: true } },
-          },
-        },
-      },
+      select: annotationAuthSelect,
     });
     if (!annotation) {
       return NextResponse.json({ error: "Annotation not found" }, { status: 404 });
@@ -72,6 +81,7 @@ export async function PATCH(
     const updated = await db.annotation.update({
       where: { id },
       data: { screenshotContextPath },
+      select: annotationScalarSelect,
     });
     return NextResponse.json({ annotation: updated });
   } catch (error) {
@@ -97,13 +107,7 @@ export async function DELETE(
 
     const annotation = await db.annotation.findUnique({
       where: { id },
-      include: {
-        reviewItem: {
-          include: {
-            project: { include: { members: true } },
-          },
-        },
-      },
+      select: annotationAuthSelect,
     });
 
     if (!annotation) {

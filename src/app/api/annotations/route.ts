@@ -3,6 +3,10 @@ import { auth } from "@/lib/auth";
 import { db, UserRole, ProjectRole, ActivityActionType } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
 import { annotationSchema } from "@/lib/validations/annotation";
+import {
+  annotationCreateSelect,
+  annotationListSelect,
+} from "@/lib/db/annotation-api-select";
 
 // GET /api/annotations - List annotations for a review item
 export async function GET(request: NextRequest) {
@@ -53,15 +57,7 @@ export async function GET(request: NextRequest) {
         reviewItemId,
         ...(revisionId ? { reviewRevisionId: revisionId } : {}),
       },
-      include: {
-        commentThread: {
-          select: { id: true, status: true },
-        },
-        createdByUser: {
-          select: { firstName: true, lastName: true },
-        },
-        createdByGuest: true,
-      },
+      select: annotationListSelect,
       orderBy: { createdAt: "desc" },
     });
 
@@ -83,7 +79,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await request.json();
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
     const validated = annotationSchema.safeParse(body);
 
     if (!validated.success) {
@@ -164,11 +165,8 @@ export async function POST(request: NextRequest) {
         color: d.color,
         createdByUserId: session.user.id,
       },
-      include: {
-        createdByUser: {
-          select: { firstName: true, lastName: true },
-        },
-      },
+      // Explicit select omits pin_in_crop_* so post-INSERT fetch works on unmigrated DBs
+      select: annotationCreateSelect,
     });
 
     try {
