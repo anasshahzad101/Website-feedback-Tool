@@ -46,6 +46,9 @@ import.env
 /public/uploads
 /uploads
 
+# Cursor (local debug logs, workspace artifacts)
+.cursor/
+
 # IDE
 .vscode
 .idea

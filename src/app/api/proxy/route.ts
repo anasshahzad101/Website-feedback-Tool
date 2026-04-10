@@ -109,6 +109,7 @@ export async function GET(req: NextRequest) {
 
     if (isHtml) {
       let html = await response.text();
+      const appOrigin = req.nextUrl.origin;
 
       // Drop meta CSP / frame policies that still block rendering inside our iframe
       html = html.replace(
@@ -127,10 +128,12 @@ export async function GET(req: NextRequest) {
         html = baseTag + html;
       }
 
-      // Stability-first: keep resource URLs direct whenever possible to avoid
-      // proxy storms (many nested /api/proxy fetches) on heavy marketing pages.
-      // We only normalize root-relative links to absolute target URLs.
-      html = rewriteResourceUrls(html, targetUrl);
+      // Root-relative <img src> etc. → absolute target URLs (subresources; do not change iframe location).
+      html = rewriteSubresourceRootRelativeUrls(html, targetUrl);
+      // Navigational href/action → full appOrigin + /api/proxy so clicks stay same-origin
+      // (otherwise <base> + absolute target links navigate the iframe cross-origin and pin capture breaks).
+      html = rewriteNavigationalRootRelativeToProxy(html, targetUrl, appOrigin);
+      html = rewriteSameSiteAbsoluteNavUrlsToProxy(html, targetUrl, appOrigin);
 
       responseHeaders.set("content-type", "text/html; charset=utf-8");
       for (const [k, v] of Object.entries(NO_STORE_PREVIEW_HEADERS)) {
@@ -179,16 +182,14 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/**
- * Rewrite absolute URLs in HTML for scripts/styles/images
- * so they also pass through our proxy (avoiding CSP issues)
- */
-function rewriteResourceUrls(html: string, baseUrl: URL): string {
-  // Rewrite root-relative URLs (e.g. /wp-content/...) to proxied absolute URLs.
-  // <base> does not affect root-relative paths, so without this they incorrectly
-  // resolve to our own origin and 404.
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Root-relative subresource URLs only (src / srcset) → absolute on the target site. */
+function rewriteSubresourceRootRelativeUrls(html: string, baseUrl: URL): string {
   html = html.replace(
-    /((?:src|href|action)=["'])(\/(?!\/)[^"']*)(["'])/gi,
+    /((?:src)=["'])(\/(?!\/)[^"']*)(["'])/gi,
     (match, prefix, rootRelativePath, suffix) => {
       try {
         const absUrl = `${baseUrl.origin}${rootRelativePath}`;
@@ -199,7 +200,6 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
     }
   );
 
-  // Rewrite srcset entries (root-relative URLs)
   html = html.replace(/(srcset=["'])([^"']+)(["'])/gi, (match, prefix, value, suffix) => {
     const rewritten = String(value)
       .split(",")
@@ -216,6 +216,79 @@ function rewriteResourceUrls(html: string, baseUrl: URL): string {
     return `${prefix}${rewritten}${suffix}`;
   });
 
+  return html;
+}
+
+function hostVariants(host: string): string[] {
+  const out = new Set<string>([host]);
+  if (host.startsWith("www.")) {
+    out.add(host.slice(4));
+  } else {
+    out.add(`www.${host}`);
+  }
+  return [...out];
+}
+
+/** href / action / formaction with root-relative path → stay in iframe via proxy (full app URL). */
+function rewriteNavigationalRootRelativeToProxy(
+  html: string,
+  siteUrl: URL,
+  appOrigin: string
+): string {
+  return html.replace(
+    /((?:href|action|formaction)=["'])(\/(?!\/)[^"']*)(["'])/gi,
+    (match, prefix, rootRelativePath, suffix) => {
+      try {
+        const absUrl = `${siteUrl.origin}${rootRelativePath}`;
+        const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(absUrl)}`;
+        return `${prefix}${proxied}${suffix}`;
+      } catch {
+        return match;
+      }
+    }
+  );
+}
+
+/** Absolute links to the reviewed site → proxy so the iframe document stays same-origin. */
+function rewriteSameSiteAbsoluteNavUrlsToProxy(
+  html: string,
+  siteUrl: URL,
+  appOrigin: string
+): string {
+  const hosts = hostVariants(siteUrl.host);
+  for (const host of hosts) {
+    const escHost = escapeRegExp(host);
+    for (const proto of ["https:", "http:"]) {
+      const origin = `${proto}//${host}`;
+      const escOrigin = escapeRegExp(origin);
+      html = html.replace(
+        new RegExp(
+          `\\b(href|action|formaction)=(["'])(${escOrigin})([^"']*)\\2`,
+          "gi"
+        ),
+        (_m, attr, q, _o, pathPart: string) => {
+          const abs = origin + pathPart;
+          if (abs.includes(`${appOrigin}/api/proxy`)) {
+            return `${attr}=${q}${origin}${pathPart}${q}`;
+          }
+          const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(abs)}`;
+          return `${attr}=${q}${proxied}${q}`;
+        }
+      );
+    }
+    html = html.replace(
+      new RegExp(
+        `\\b(href|action|formaction)=(["'])(//${escHost})([^"']*)\\2`,
+        "gi"
+      ),
+      (_m, attr, q, _protoHost, rest: string) => {
+        const path = rest && !rest.startsWith("/") ? `/${rest}` : rest || "/";
+        const abs = new URL(path, `${siteUrl.protocol}//${host}`).toString();
+        const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(abs)}`;
+        return `${attr}=${q}${proxied}${q}`;
+      }
+    );
+  }
   return html;
 }
 

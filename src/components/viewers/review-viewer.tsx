@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  type RefObject,
+} from "react";
 import {
   Dialog,
   DialogContent,
@@ -256,11 +263,21 @@ export function ReviewViewer({
   const [commentSearchQuery, setCommentSearchQuery] = useState("");
   const [resolvedCommentsExpanded, setResolvedCommentsExpanded] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  /** Direct ref to the proxied live preview iframe (querySelector can miss after async work). */
+  const websiteLiveIframeRef = useRef<HTMLIFrameElement | null>(null);
   /** Live website: viewport capture started when the pin is placed; await on submit. */
   const liveContextInFlightRef = useRef<{
     pinClientId: string;
     promise: Promise<string | null>;
   } | null>(null);
+
+  const getLiveWebsiteIframe = useCallback((): HTMLIFrameElement | null => {
+    return (
+      websiteLiveIframeRef.current ??
+      contentRef.current?.querySelector("iframe") ??
+      null
+    );
+  }, []);
 
   const displayRevision = selectedRevisionId
     ? revisions.find((r) => r.id === selectedRevisionId) ?? currentRevision
@@ -514,7 +531,7 @@ export function ReviewViewer({
           requestAnimationFrame(() => {
             requestAnimationFrame(async () => {
               try {
-                const iframe = contentRef.current?.querySelector("iframe");
+                const iframe = getLiveWebsiteIframe();
                 if (!iframe?.contentDocument?.body) {
                   resolve(null);
                   return;
@@ -563,7 +580,7 @@ export function ReviewViewer({
       websiteViewMode === "live" &&
       effectiveSourceUrl
     ) {
-      const iframe = contentRef.current?.querySelector("iframe");
+      const iframe = getLiveWebsiteIframe();
       if (iframe) {
         frozenWebsiteViewport = freezeIframeViewport(iframe);
       }
@@ -618,10 +635,12 @@ export function ReviewViewer({
       if (annotationForContext && annotationId) {
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
           if (websiteViewMode === "live") {
-            const iframe = contentRef.current?.querySelector("iframe");
+            const iframe = getLiveWebsiteIframe();
             let dataUrl: string | null = null;
             const inFlight = liveContextInFlightRef.current;
-            if (inFlight?.pinClientId === annotationForContext.id) {
+            // Await any in-flight capture for this session — only one pending pin at a time;
+            // strict pinClientId match skipped snapshots when ids ever diverged.
+            if (inFlight) {
               dataUrl = await withTimeout(inFlight.promise, 35000);
             }
             liveContextInFlightRef.current = null;
@@ -756,6 +775,7 @@ export function ReviewViewer({
     effectiveFilePath,
     websiteViewMode,
     annotations,
+    getLiveWebsiteIframe,
   ]);
 
   const handleCancelPending = useCallback(() => {
@@ -1248,6 +1268,7 @@ export function ReviewViewer({
                 filePath={effectiveFilePath}
                 websiteViewMode={websiteViewMode}
                 onRasterLayoutChange={remeasureContent}
+                liveIframeRef={websiteLiveIframeRef}
               />
               {annotationLayerActive && (
                 <AnnotationLayer
@@ -1757,7 +1778,7 @@ export function ReviewViewer({
         if (!open) setContextLightbox(null);
       }}
     >
-      <DialogContent className="max-w-[min(96vw,1200px)] w-auto max-h-[96vh] overflow-auto p-2 sm:p-3 border bg-background">
+      <DialogContent className="w-max max-w-[min(96vw,1400px)] max-h-[96vh] overflow-auto p-1 sm:p-2 border bg-background shadow-2xl">
         <DialogTitle className="sr-only">Page context screenshot</DialogTitle>
         {contextLightbox ? (
           <ContextScreenshotWithPin
@@ -1767,7 +1788,8 @@ export function ReviewViewer({
             pinColor={contextLightbox.pinColor}
             markerLeftPercent={contextLightbox.markerLeftPercent ?? 50}
             markerTopPercent={contextLightbox.markerTopPercent ?? 50}
-            imgClassName="max-h-[min(90vh,900px)] w-full object-contain rounded-md mx-auto"
+            className="max-w-[min(calc(96vw-1rem),1400px)]"
+            imgClassName="max-h-[min(92vh,900px)] w-auto max-w-full h-auto rounded-md pointer-events-none"
           />
         ) : null}
       </DialogContent>
@@ -1785,12 +1807,14 @@ function ContentDisplay({
   filePath,
   websiteViewMode = "live",
   onRasterLayoutChange,
+  liveIframeRef,
 }: {
   type: ReviewItemType;
   sourceUrl: string | null;
   filePath: string | null;
   websiteViewMode?: "live" | "screenshot";
   onRasterLayoutChange?: () => void;
+  liveIframeRef?: RefObject<HTMLIFrameElement | null>;
 }) {
   const [iframeLoaded, setIframeLoaded] = useState(false);
   // Set iframe src only after mount so the request runs in the browser (avoids SSR issues).
@@ -1842,6 +1866,7 @@ function ContentDisplay({
           {iframeSrc ? (
           <iframe
             key={iframeSrc}
+            ref={liveIframeRef}
             src={iframeSrc}
             className="relative z-0 w-full border-0 block min-h-[900px]"
             title={sourceUrl}

@@ -3,7 +3,10 @@
 import { domToPng } from "modern-screenshot";
 import html2canvas from "html2canvas";
 
-const MAX_CONTEXT_EDGE = 1600;
+/** Pin context images: prefer at least this many pixels per side when the source allows. */
+const MIN_CONTEXT_EDGE = 1000;
+/** Hard cap on output edge (keeps PNG payloads reasonable for POST + 6MB server limit). */
+const MAX_CONTEXT_EDGE = 2000;
 
 type ViewportTarget =
   | {
@@ -152,14 +155,14 @@ function viewportForCapture(
   return resolveViewportTarget(doc, win, iframe);
 }
 
-/** Tighter crop around the pin (CSS px in the iframe / annotation layer). */
+/** Crop around the pin over a large region of the viewport capture (live iframe path). */
 async function focusCropAroundPin(
   dataUrl: string,
   pinX: number,
   pinY: number,
   viewWCss: number,
   viewHCss: number,
-  focusFraction = 0.72
+  focusFraction = 0.94
 ): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -174,22 +177,32 @@ async function focusCropAroundPin(
       const sy = ih / Math.max(1, viewHCss);
       const cx = pinX * sx;
       const cy = pinY * sy;
-      const targetW = Math.min(iw, iw * focusFraction);
-      const targetH = Math.min(ih, ih * focusFraction);
+      const targetW = Math.min(iw, Math.max(MIN_CONTEXT_EDGE, Math.round(iw * focusFraction)));
+      const targetH = Math.min(ih, Math.max(MIN_CONTEXT_EDGE, Math.round(ih * focusFraction)));
       let x0 = Math.round(cx - targetW / 2);
       let y0 = Math.round(cy - targetH / 2);
       x0 = Math.max(0, Math.min(x0, iw - targetW));
       y0 = Math.max(0, Math.min(y0, ih - targetH));
 
+      const tw = Math.round(targetW);
+      const th = Math.round(targetH);
+      let outW = tw;
+      let outH = th;
+      if (outW > MAX_CONTEXT_EDGE || outH > MAX_CONTEXT_EDGE) {
+        const r = Math.min(MAX_CONTEXT_EDGE / outW, MAX_CONTEXT_EDGE / outH);
+        outW = Math.max(1, Math.floor(outW * r));
+        outH = Math.max(1, Math.floor(outH * r));
+      }
+
       const c = document.createElement("canvas");
-      c.width = Math.min(Math.round(targetW), MAX_CONTEXT_EDGE);
-      c.height = Math.min(Math.round(targetH), MAX_CONTEXT_EDGE);
+      c.width = outW;
+      c.height = outH;
       const ctx = c.getContext("2d");
       if (!ctx) {
         resolve(dataUrl);
         return;
       }
-      ctx.drawImage(img, x0, y0, targetW, targetH, 0, 0, c.width, c.height);
+      ctx.drawImage(img, x0, y0, tw, th, 0, 0, outW, outH);
       resolve(c.toDataURL("image/png", 0.88));
     };
     img.onerror = () => resolve(dataUrl);
@@ -237,7 +250,7 @@ async function captureWithModernScreenshot(
   const node = vt.el;
   if (!node || (node === doc.documentElement && !doc.body)) return null;
 
-  const dpr = Math.min(2, doc.defaultView?.devicePixelRatio ?? 1);
+  const dpr = Math.min(2.25, doc.defaultView?.devicePixelRatio ?? 1);
 
   try {
     const dataUrl = await domToPng(node, {
@@ -407,20 +420,29 @@ export function captureImageAroundPin(
 
   const cx = xPercent * nw;
   const cy = yPercent * nh;
-  const cropW = Math.min(nw, Math.round(nw * 0.5));
-  const cropH = Math.min(nh, Math.round(cropW * 0.62));
+  const frac = 0.78;
+  let cropW = Math.min(nw, Math.max(MIN_CONTEXT_EDGE, Math.round(nw * frac)));
+  let cropH = Math.min(nh, Math.max(MIN_CONTEXT_EDGE, Math.round(nh * frac)));
   let sx = Math.round(cx - cropW / 2);
   let sy = Math.round(cy - cropH / 2);
   sx = Math.max(0, Math.min(sx, nw - cropW));
   sy = Math.max(0, Math.min(sy, nh - cropH));
 
+  let outW = cropW;
+  let outH = cropH;
+  if (outW > MAX_CONTEXT_EDGE || outH > MAX_CONTEXT_EDGE) {
+    const r = Math.min(MAX_CONTEXT_EDGE / outW, MAX_CONTEXT_EDGE / outH, 1);
+    outW = Math.max(1, Math.floor(outW * r));
+    outH = Math.max(1, Math.floor(outH * r));
+  }
+
   try {
     const canvas = document.createElement("canvas");
-    canvas.width = cropW;
-    canvas.height = cropH;
+    canvas.width = outW;
+    canvas.height = outH;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+    ctx.drawImage(img, sx, sy, cropW, cropH, 0, 0, outW, outH);
     return canvas.toDataURL("image/png", 0.88);
   } catch {
     return null;

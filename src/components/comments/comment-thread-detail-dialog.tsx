@@ -164,17 +164,17 @@ export function CommentThreadDetailDialog({
         <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
           <div className="p-4 space-y-6">
             {shotUrl ? (
-              <div className="rounded-lg border border-blue-200/80 bg-blue-50/40 dark:border-blue-900/50 dark:bg-blue-950/20 p-3">
-                <p className="text-xs font-semibold text-blue-900 dark:text-blue-100 mb-1">
+              <div className="rounded-xl border border-primary/25 bg-primary/[0.06] dark:bg-primary/10 dark:border-primary/35 p-3 shadow-sm">
+                <p className="text-xs font-semibold text-foreground tracking-tight mb-0.5">
                   Pin location snapshot
                 </p>
-                <p className="text-[11px] text-muted-foreground mb-3">
+                <p className="text-[11px] text-muted-foreground mb-2.5 leading-snug">
                   Cropped view where this pin was placed — separate from any files
                   attached below.
                 </p>
                 <button
                   type="button"
-                  className="relative w-full rounded-lg border bg-background overflow-hidden max-h-64 cursor-zoom-in text-left focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="group relative flex w-full justify-center rounded-lg overflow-hidden cursor-zoom-in focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-1 ring-border/80 shadow-md hover:ring-primary/35 hover:shadow-lg transition-shadow p-0 bg-muted/20 dark:bg-muted/30"
                   onClick={() => onOpenScreenshot(shotUrl)}
                 >
                   <ContextScreenshotWithPin
@@ -182,11 +182,12 @@ export function CommentThreadDetailDialog({
                     alt="Pin location snapshot"
                     pinNumber={pinNumber}
                     pinColor={pinColor}
-                    imgClassName="max-h-64 pointer-events-none"
+                    className="max-w-full rounded-lg"
+                    imgClassName="max-w-full max-h-[min(20rem,52vh)] w-auto h-auto pointer-events-none rounded-lg"
                     markerLeftPercent={contextMarkerLeftPercent}
                     markerTopPercent={contextMarkerTopPercent}
                   />
-                  <span className="absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded bg-background/90 px-2 py-1 text-[10px] font-medium shadow pointer-events-none">
+                  <span className="absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 rounded-md bg-background/95 px-2 py-1 text-[10px] font-medium shadow-md border border-border/60 pointer-events-none backdrop-blur-[2px]">
                     <ZoomIn className="h-3 w-3" />
                     Larger view
                   </span>

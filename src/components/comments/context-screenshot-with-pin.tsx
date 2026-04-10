@@ -28,14 +28,23 @@ export function ContextScreenshotWithPin({
   markerTopPercent?: number;
 }) {
   return (
-    <div className={cn("relative w-full", className)}>
+    <div
+      className={cn(
+        "relative inline-block max-w-full align-top",
+        className
+      )}
+    >
       <img
         src={src}
         alt={alt}
-        className={cn("w-full h-auto object-contain block", imgClassName)}
+        className={cn(
+          "block max-w-full h-auto align-top",
+          // No object-contain: wrapper hugs image pixels so the pin marker aligns and there’s no empty bars.
+          imgClassName
+        )}
       />
       <div
-        className="pointer-events-none absolute inset-0"
+        className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]"
         aria-hidden
       >
         <div
@@ -47,7 +56,7 @@ export function ContextScreenshotWithPin({
           }}
         >
           <span
-            className="flex min-h-8 min-w-8 items-center justify-center rounded-full px-2 text-sm font-bold text-white shadow-lg ring-[3px] ring-white/95"
+            className="flex min-h-9 min-w-9 items-center justify-center rounded-full px-2.5 text-sm font-bold text-white shadow-lg ring-[3px] ring-white/95 drop-shadow-[0_2px_6px_rgba(0,0,0,0.55)]"
             style={{ backgroundColor: pinColor }}
           >
             {pinNumber}
