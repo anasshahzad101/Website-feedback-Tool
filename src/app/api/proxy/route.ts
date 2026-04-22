@@ -214,7 +214,7 @@ function buildSameDocumentRuntimePatch(targetOrigin: string, appOrigin: string):
   function R(u){
     if(u==null||typeof u!=="string")return u;
     if(u.startsWith(A+"/api/proxy"))return u;
-    if(u.charAt(0)==="/"&&u.charAt(1)!==="/")return P(T+u);
+    if(u.charAt(0)==="/"&&u.charAt(1)!=="/")return P(T+u);
     try{
       var bo=new URL(A).origin;
       var p=new URL(u,A+"/");
