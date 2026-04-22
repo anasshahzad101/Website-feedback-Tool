@@ -57,12 +57,32 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user) {
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    if (!Permissions.canCreateProject(session.user.role as UserRole)) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    // Use DB user so permissions and FKs match (JWT can be stale after DB reset / re-seed).
+    const actor = await db.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, role: true, isActive: true },
+    });
+    if (!actor?.isActive) {
+      return NextResponse.json(
+        {
+          error:
+            "Your session is out of date (user not found). Sign out and sign in again.",
+        },
+        { status: 401 }
+      );
+    }
+    if (!Permissions.canCreateProject(actor.role)) {
+      return NextResponse.json(
+        {
+          error:
+            "Your role cannot create projects. Sign in as Owner, Admin, or Project Manager.",
+        },
+        { status: 403 }
+      );
     }
 
     const body = await request.json();
@@ -91,8 +111,9 @@ export async function POST(request: NextRequest) {
       clientId = defaultClient.id;
     }
 
-    // Generate unique slug
-    let slug = slugify(validated.data.name, { lower: true, strict: true });
+    // Generate unique slug (slugify returns "" for emoji-only / some scripts — use a fallback)
+    const slugBase = slugify(validated.data.name, { lower: true, strict: true }).trim();
+    let slug = slugBase || "project";
     let suffix = 1;
     const baseSlug = slug;
 
@@ -103,10 +124,12 @@ export async function POST(request: NextRequest) {
 
     const project = await db.project.create({
       data: {
-        ...validated.data,
+        name: validated.data.name.trim(),
+        description: validated.data.description?.trim() || null,
+        status: validated.data.status,
         clientId,
         slug,
-        createdById: session.user.id,
+        createdById: actor.id,
       },
       include: {
         client: {
@@ -123,7 +146,7 @@ export async function POST(request: NextRequest) {
     await db.projectMember.create({
       data: {
         projectId: project.id,
-        userId: session.user.id,
+        userId: actor.id,
         roleInProject: "MANAGER",
       },
     });
@@ -134,7 +157,7 @@ export async function POST(request: NextRequest) {
         entityType: "Project",
         entityId: project.id,
         actionType: ActivityActionType.PROJECT_CREATED,
-        actorUserId: session.user.id,
+        actorUserId: actor.id,
         metaJson: JSON.stringify({ name: project.name, clientId: project.clientId }),
       },
     });
@@ -142,8 +165,25 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
     console.error("Error creating project:", error);
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2003"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Database rejected the link to your user (often after resetting the DB). Sign out, sign in again, then retry.",
+        },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
-      { error: "Failed to create project" },
+      {
+        error: "Failed to create project",
+        ...(process.env.NODE_ENV === "development" && error instanceof Error
+          ? { details: error.message }
+          : {}),
+      },
       { status: 500 }
     );
   }

@@ -1,6 +1,6 @@
 import { auth } from "@/lib/auth";
-import { db, UserRole } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
+import { coerceSessionRole } from "@/lib/auth/session-role";
 import { redirect } from "next/navigation";
 import { CreateProjectForm } from "@/components/forms/create-project-form";
 import Link from "next/link";
@@ -10,7 +10,8 @@ import { ArrowLeft } from "lucide-react";
 export default async function NewProjectPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
-  if (!Permissions.canCreateProject(session.user.role as UserRole)) redirect("/projects");
+  const userRole = coerceSessionRole(session.user.role);
+  if (!Permissions.canCreateProject(userRole)) redirect("/projects");
 
   return (
     <div className="space-y-6">

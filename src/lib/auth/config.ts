@@ -64,7 +64,7 @@ export const authConfig: NextAuthConfig = {
       }
       return session;
     },
-    jwt({ token, user }) {
+    async jwt({ token, user }) {
       if (user) {
         token.sub = user.id;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,6 +72,23 @@ export const authConfig: NextAuthConfig = {
         token.role = u.role;
         token.firstName = u.firstName;
         token.lastName = u.lastName;
+        return token;
+      }
+      // Stale cookies / older tokens may omit `role`; backfill so permission checks work.
+      const sub = token.sub;
+      const roleMissing =
+        token.role === undefined || token.role === null || token.role === "";
+      if (typeof sub === "string" && sub && roleMissing) {
+        const { db } = await import("@/lib/db/client");
+        const row = await db.user.findUnique({
+          where: { id: sub },
+          select: { role: true, firstName: true, lastName: true },
+        });
+        if (row) {
+          token.role = row.role;
+          if (!token.firstName) token.firstName = row.firstName;
+          if (!token.lastName) token.lastName = row.lastName;
+        }
       }
       return token;
     },

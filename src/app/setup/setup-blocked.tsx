@@ -17,7 +17,7 @@ export function SetupBlocked({
         </h1>
         <p className="mt-3 text-sm text-slate-300 leading-relaxed">
           {isMissingUrl
-            ? "This app needs a MySQL connection string in the server environment. In Hostinger: open your Node.js app → Environment variables and add DATABASE_URL."
+            ? "For production, set a MySQL connection string: in Hostinger open your Node.js app → Environment variables and add DATABASE_URL (or DB_HOST, DB_USER, DB_PASSWORD, DB_NAME). For local dev without MySQL, copy .env.example to .env and set USE_SQLITE=true, then run npm run db:local:setup."
             : "Check DATABASE_URL (host, user, password, database name) and that MySQL is running. After fixing, redeploy and run prisma migrate deploy if tables are missing."}
         </p>
 

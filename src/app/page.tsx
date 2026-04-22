@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { needsInitialSetup } from "@/lib/app-settings";
+import { isDatabaseEnvConfigured } from "@/lib/db/database-env";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export default async function HomePage() {
     redirect("/dashboard");
   }
 
-  if (!process.env.DATABASE_URL?.trim()) {
+  if (!isDatabaseEnvConfigured()) {
     redirect("/setup");
   }
 

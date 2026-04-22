@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db/client";
+import { isDatabaseEnvConfigured } from "@/lib/db/database-env";
 import { probeMysqlWithPool } from "@/lib/db/mysql-probe";
 import { extractPrismaDbError } from "@/lib/db/prisma-error";
 import { bootstrapServerEnv } from "@/lib/env/server-env-bootstrap";
@@ -21,7 +22,8 @@ function redactConnectionDetails(message: string): string {
  */
 export async function GET() {
   bootstrapServerEnv();
-  const databaseUrlSet = !!process.env.DATABASE_URL?.trim();
+  /** True for MySQL (URL set) or local SQLite (USE_SQLITE=true). */
+  const databaseUrlSet = isDatabaseEnvConfigured();
 
   let dbStatus: "ok" | "error" | "skipped" = "skipped";
   let dbErrorCode: string | undefined;

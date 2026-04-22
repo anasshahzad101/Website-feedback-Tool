@@ -1,6 +1,7 @@
 import { auth } from "@/lib/auth";
 import { db, UserRole, ProjectStatus, Prisma } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
+import { coerceSessionRole } from "@/lib/auth/session-role";
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -13,12 +14,6 @@ function parseStatusQueryParam(raw: string | undefined): ProjectStatus | undefin
   const u = raw.trim().toUpperCase();
   if (u === ProjectStatus.ACTIVE || u === ProjectStatus.ARCHIVED) return u;
   return undefined;
-}
-
-function coerceSessionRole(role: string | undefined): UserRole {
-  const values = Object.values(UserRole) as string[];
-  if (role && values.includes(role)) return role as UserRole;
-  return UserRole.REVIEWER;
 }
 
 export default async function ProjectsPage({

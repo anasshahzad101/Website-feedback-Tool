@@ -22,6 +22,7 @@ export function CreateProjectForm() {
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify(formData),
       });
       if (response.ok) {
@@ -29,8 +30,22 @@ export function CreateProjectForm() {
         toast.success("Project created");
         router.push(`/projects/${data.project.id}`);
       } else {
-        const error = await response.json();
-        toast.error(error.error || "Failed to create project");
+        const error = await response.json().catch(() => ({}));
+        const msg =
+          typeof error.error === "string"
+            ? error.error
+            : "Failed to create project";
+        const zodDetail =
+          error.details?.fieldErrors &&
+          typeof error.details.fieldErrors === "object"
+            ? Object.values(error.details.fieldErrors as Record<string, string[]>)
+                .flat()
+                .filter(Boolean)[0]
+            : undefined;
+        const devDetail =
+          typeof error.details === "string" ? error.details : undefined;
+        const combined = zodDetail || devDetail;
+        toast.error(combined ? `${msg}: ${combined}` : msg);
       }
     } catch {
       toast.error("An error occurred. Please try again.");
