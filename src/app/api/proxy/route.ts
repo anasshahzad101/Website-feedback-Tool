@@ -122,12 +122,17 @@ export async function GET(req: NextRequest) {
       // Inject <base> tag so relative URLs resolve against the proxied origin
       const baseTag = `<base href="${targetUrl.origin}${targetUrl.pathname.substring(0, targetUrl.pathname.lastIndexOf("/") + 1)}" target="_self">`;
 
+      // SPAs (e.g. Canva) use fetch('/api/...'), XHR, and webpack chunk paths that resolve against
+      // the iframe document URL (our app host), not <base>. That yields 404s on /api/_assets, etc.
+      // Run this synchronously first in <head> so it wins over bundled loaders.
+      const runtimePatch = buildSameDocumentRuntimePatch(targetUrl.origin, appOrigin);
+
       // Rewrite absolute URLs of common resources to go through our proxy
       // Also inject base tag right after <head>
       if (/<head[^>]*>/i.test(html)) {
-        html = html.replace(/(<head[^>]*>)/i, `$1${baseTag}`);
+        html = html.replace(/(<head[^>]*>)/i, `$1${baseTag}${runtimePatch}`);
       } else {
-        html = baseTag + html;
+        html = baseTag + runtimePatch + html;
       }
 
       // Subresources → same-origin proxy URLs so canvas capture (html2canvas/modern-screenshot)
@@ -194,6 +199,56 @@ function escapeRegExp(s: string): string {
 
 function proxyAssetUrl(appOrigin: string, absoluteUrl: string): string {
   return `${appOrigin}/api/proxy?url=${encodeURIComponent(absoluteUrl)}`;
+}
+
+/**
+ * Inline script inserted at the start of proxied HTML: many SPAs resolve `/api/...`, XHR, and script
+ * URLs against the iframe document (our app origin), ignoring `<base>`. Rewrites those at runtime.
+ */
+function buildSameDocumentRuntimePatch(targetOrigin: string, appOrigin: string): string {
+  const T = JSON.stringify(targetOrigin);
+  const A = JSON.stringify(appOrigin);
+  const js = `(function(){
+  var T=${T},A=${A},PH=A+"/api/proxy?url=";
+  function P(u){return PH+encodeURIComponent(u);}
+  function R(u){
+    if(u==null||typeof u!=="string")return u;
+    if(u.startsWith(A+"/api/proxy"))return u;
+    if(u.charAt(0)==="/"&&u.charAt(1)!==="/")return P(T+u);
+    try{
+      var bo=new URL(A).origin;
+      var p=new URL(u,A+"/");
+      if(p.origin===bo&&p.pathname.startsWith("/api/")&&!p.pathname.startsWith("/api/proxy"))return P(T+p.pathname+p.search+p.hash);
+    }catch(e){}
+    return u;
+  }
+  var fe=window.fetch;
+  window.fetch=function(i,n){
+    if(typeof i==="string")return fe.call(this,R(i),n);
+    if(typeof Request!=="undefined"&&i instanceof Request){var ru=R(i.url);if(ru!==i.url)return fe.call(this,new Request(ru,i),n);}
+    return fe.call(this,i,n);
+  };
+  var xo=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(){var a=[].slice.call(arguments);if(typeof a[1]==="string")a[1]=R(a[1]);return xo.apply(this,a);};
+  var sa=Element.prototype.setAttribute;
+  Element.prototype.setAttribute=function(k,v){
+    var t=this.tagName,lk=(k+"").toLowerCase();
+    if((t==="SCRIPT"&&lk==="src")||(t==="LINK"&&lk==="href")||(t==="IMG"&&lk==="src")||(t==="SOURCE"&&lk==="src"))v=R(String(v));
+    return sa.call(this,k,v);
+  };
+  function patchSrcLike(ctor,prop){
+    try{var d=Object.getOwnPropertyDescriptor(ctor.prototype,prop);
+    if(!d||!d.set)return;
+    Object.defineProperty(ctor.prototype,prop,{get:d.get,set:function(v){d.set.call(this,R(String(v)));},configurable:true});
+    }catch(e){}
+  }
+  if(typeof HTMLScriptElement!=="undefined")patchSrcLike(HTMLScriptElement,"src");
+  if(typeof HTMLLinkElement!=="undefined")patchSrcLike(HTMLLinkElement,"href");
+  if(typeof HTMLImageElement!=="undefined")patchSrcLike(HTMLImageElement,"src");
+  if(typeof HTMLSourceElement!=="undefined")patchSrcLike(HTMLSourceElement,"src");
+  if(navigator.sendBeacon){var sb=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){return sb(typeof u==="string"?R(u):u,d);};}
+})();`;
+  return `<script>${js}</script>`;
 }
 
 /** Root-relative subresource URLs (src / srcset) → same-origin proxy of the target absolute URL. */
