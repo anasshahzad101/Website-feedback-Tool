@@ -108,9 +108,10 @@ export async function GET(req: NextRequest) {
     // Do not set x-frame-options so the proxied page can be embedded in our iframe.
     // (We already stripped the target's x-frame-options above.)
 
+    const appOrigin = publicRequestOrigin(req);
+
     if (isHtml) {
       let html = await response.text();
-      const appOrigin = publicRequestOrigin(req);
 
       // Drop meta CSP / frame policies that still block rendering inside our iframe
       html = html.replace(
@@ -129,8 +130,12 @@ export async function GET(req: NextRequest) {
         html = baseTag + html;
       }
 
-      // Root-relative <img src> etc. → absolute target URLs (subresources; do not change iframe location).
-      html = rewriteSubresourceRootRelativeUrls(html, targetUrl);
+      // Subresources → same-origin proxy URLs so canvas capture (html2canvas/modern-screenshot)
+      // can read pixels without cross-origin taint, and path-relative URLs like `w=1688/...`
+      // do not resolve against `/api/proxy` on the app host.
+      html = rewriteSubresourceRootRelativeUrls(html, targetUrl, appOrigin);
+      html = rewritePathRelativeCdnPatterns(html, targetUrl, appOrigin);
+      html = rewriteSameSiteAbsoluteSubresourceUrlsToProxy(html, targetUrl, appOrigin);
       // Navigational href/action → full appOrigin + /api/proxy so clicks stay same-origin
       // (otherwise <base> + absolute target links navigate the iframe cross-origin and pin capture breaks).
       html = rewriteNavigationalRootRelativeToProxy(html, targetUrl, appOrigin);
@@ -148,7 +153,7 @@ export async function GET(req: NextRequest) {
 
     if (isCss) {
       const css = await response.text();
-      const rewrittenCss = rewriteCssUrls(css, targetUrl);
+      const rewrittenCss = rewriteCssUrls(css, targetUrl, appOrigin);
       responseHeaders.set("content-type", "text/css; charset=utf-8");
       for (const [k, v] of Object.entries(NO_STORE_PREVIEW_HEADERS)) {
         responseHeaders.set(k, v);
@@ -187,14 +192,22 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Root-relative subresource URLs only (src / srcset) → absolute on the target site. */
-function rewriteSubresourceRootRelativeUrls(html: string, baseUrl: URL): string {
+function proxyAssetUrl(appOrigin: string, absoluteUrl: string): string {
+  return `${appOrigin}/api/proxy?url=${encodeURIComponent(absoluteUrl)}`;
+}
+
+/** Root-relative subresource URLs (src / srcset) → same-origin proxy of the target absolute URL. */
+function rewriteSubresourceRootRelativeUrls(
+  html: string,
+  baseUrl: URL,
+  appOrigin: string
+): string {
   html = html.replace(
     /((?:src)=["'])(\/(?!\/)[^"']*)(["'])/gi,
     (match, prefix, rootRelativePath, suffix) => {
       try {
         const absUrl = `${baseUrl.origin}${rootRelativePath}`;
-        return `${prefix}${absUrl}${suffix}`;
+        return `${prefix}${proxyAssetUrl(appOrigin, absUrl)}${suffix}`;
       } catch {
         return match;
       }
@@ -211,11 +224,122 @@ function rewriteSubresourceRootRelativeUrls(html: string, baseUrl: URL): string 
         const candidate = bits[0] ?? "";
         if (!candidate.startsWith("/") || candidate.startsWith("//")) return trimmed;
         const absUrl = `${baseUrl.origin}${candidate}`;
-        return [absUrl, ...bits.slice(1)].join(" ");
+        return [proxyAssetUrl(appOrigin, absUrl), ...bits.slice(1)].join(" ");
       })
       .join(", ");
     return `${prefix}${rewritten}${suffix}`;
   });
+
+  return html;
+}
+
+/**
+ * Path-relative URLs that commonly appear on Cloudflare / WordPress pages (e.g. `w=1688/...`)
+ * resolve incorrectly when the iframe document is `/api/proxy?...` (they become `/api/w=...` on
+ * the app host). Rewrite to a proxy URL against the reviewed page's origin.
+ */
+function rewritePathRelativeCdnPatterns(
+  html: string,
+  documentUrl: URL,
+  appOrigin: string
+): string {
+  const rewriteAttr = (
+    attr: string,
+    value: string
+  ): string | null => {
+    const t = value.trim();
+    if (!t || /^(https?:|\/\/|data:|#|\/)/i.test(t)) return null;
+    if (!/^(w=\d+\/|cdn-cgi\/)/i.test(t)) return null;
+    try {
+      const abs = new URL(t, documentUrl).toString();
+      return proxyAssetUrl(appOrigin, abs);
+    } catch {
+      return null;
+    }
+  };
+
+  html = html.replace(
+    new RegExp(`\\b(src|href|poster)=(["'])([^"']+)\\2`, "gi"),
+    (match, attr: string, q: string, val: string) => {
+      const next = rewriteAttr(attr, val);
+      return next ? `${attr}=${q}${next}${q}` : match;
+    }
+  );
+
+  html = html.replace(/(srcset=["'])([^"']+)(["'])/gi, (match, prefix, value, suffix) => {
+    const rewritten = String(value)
+      .split(",")
+      .map((part) => {
+        const trimmed = part.trim();
+        if (!trimmed) return trimmed;
+        const bits = trimmed.split(/\s+/);
+        const candidate = bits[0] ?? "";
+        const proxied = rewriteAttr("src", candidate);
+        return proxied ? [proxied, ...bits.slice(1)].join(" ") : trimmed;
+      })
+      .join(", ");
+    return `${prefix}${rewritten}${suffix}`;
+  });
+
+  return html;
+}
+
+/**
+ * Absolute http(s) subresource URLs → same-origin proxy (any off-app origin).
+ * Reviewed pages often load fonts/images from CDNs (e.g. cdn.*) that block cross-origin canvas reads;
+ * routing them through /api/proxy keeps capture libraries from hitting CORS taint.
+ */
+function rewriteSameSiteAbsoluteSubresourceUrlsToProxy(
+  html: string,
+  siteUrl: URL,
+  appOrigin: string
+): string {
+  let appHost: string;
+  try {
+    appHost = new URL(appOrigin).host;
+  } catch {
+    appHost = "";
+  }
+  const shouldProxy = (u: URL): boolean => {
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    if (appHost && u.host === appHost) return false;
+    return true;
+  };
+
+  const rewriteValue = (raw: string): string => {
+    const t = raw.trim();
+    if (!t || t.startsWith("data:") || t.startsWith("#")) return raw;
+    try {
+      const u = new URL(t, siteUrl);
+      if (!shouldProxy(u)) return raw;
+      const abs = u.toString();
+      if (abs.includes(`${appOrigin}/api/proxy`)) return raw;
+      return proxyAssetUrl(appOrigin, abs);
+    } catch {
+      return raw;
+    }
+  };
+
+  html = html.replace(
+    /\b(src|srcset|poster)=(["'])([^"']+)\2/gi,
+    (match, attr: string, q: string, value: string) => {
+      if (attr.toLowerCase() === "srcset") {
+        const rewritten = value
+          .split(",")
+          .map((part) => {
+            const trimmed = part.trim();
+            if (!trimmed) return trimmed;
+            const bits = trimmed.split(/\s+/);
+            const first = bits[0] ?? "";
+            const rest = [rewriteValue(first), ...bits.slice(1)].join(" ");
+            return rest;
+          })
+          .join(", ");
+        return `${attr}=${q}${rewritten}${q}`;
+      }
+      return `${attr}=${q}${rewriteValue(value)}${q}`;
+    }
+  );
 
   return html;
 }
@@ -293,8 +417,19 @@ function rewriteSameSiteAbsoluteNavUrlsToProxy(
   return html;
 }
 
-/** Keep CSS imports/assets direct to reduce nested proxy load. */
-function rewriteCssUrls(css: string, baseUrl: URL): string {
+/** Resolve CSS url() / @import against the stylesheet URL, then serve via same-origin proxy. */
+function rewriteCssUrls(css: string, baseUrl: URL, appOrigin: string): string {
+  const wrap = (resolved: string): string => {
+    try {
+      const u = new URL(resolved);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return resolved;
+      if (resolved.includes(`${appOrigin}/api/proxy`)) return resolved;
+      return proxyAssetUrl(appOrigin, u.toString());
+    } catch {
+      return resolved;
+    }
+  };
+
   let out = css.replace(/url\(([^)]+)\)/gi, (full, rawInner) => {
     const inner = String(rawInner).trim().replace(/^['"]|['"]$/g, "");
     if (!inner || inner.startsWith("data:") || inner.startsWith("blob:")) {
@@ -302,7 +437,7 @@ function rewriteCssUrls(css: string, baseUrl: URL): string {
     }
     try {
       const resolved = new URL(inner, `${baseUrl.origin}${baseUrl.pathname}`).toString();
-      return `url("${resolved}")`;
+      return `url("${wrap(resolved)}")`;
     } catch {
       return full;
     }
@@ -313,7 +448,7 @@ function rewriteCssUrls(css: string, baseUrl: URL): string {
     if (!inner || inner.startsWith("data:") || inner.startsWith("blob:")) return full;
     try {
       const resolved = new URL(inner, `${baseUrl.origin}${baseUrl.pathname}`).toString();
-      return `@import url("${resolved}")`;
+      return `@import url("${wrap(resolved)}")`;
     } catch {
       return full;
     }

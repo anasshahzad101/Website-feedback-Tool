@@ -89,6 +89,7 @@ export function CommentSidebar({
       const res = await fetch("/api/comments", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ threadId, body: text }),
       });
 
@@ -97,21 +98,32 @@ export function CommentSidebar({
         throw new Error(data.error || "Failed to send reply");
       }
 
-      const { message } = await res.json();
-
-      // Optimistically add message to thread
-      const newMessage: CommentMessage = {
-        id: message.id,
-        body: text,
-        createdAt: new Date(message.createdAt),
-        createdByUser: { firstName: user.firstName, lastName: user.lastName },
-        createdByGuest: null,
-        isSystemMessage: false,
-      };
-
+      const { thread: updated } = await res.json();
       const updatedThreads = threads.map((t) =>
         t.id === threadId
-          ? { ...t, messages: [...t.messages, newMessage] }
+          ? {
+              id: updated.id,
+              status: updated.status,
+              rootAnnotationId: updated.rootAnnotationId ?? t.rootAnnotationId,
+              messages: (updated.messages ?? []).map(
+                (m: {
+                  id: string;
+                  body: string;
+                  createdAt: string;
+                  createdByUser?: { firstName: string; lastName: string } | null;
+                  createdByGuest?: { name: string } | null;
+                  isSystemMessage: boolean;
+                }) => ({
+                  id: m.id,
+                  body: m.body,
+                  createdAt: new Date(m.createdAt),
+                  createdByUser: m.createdByUser,
+                  createdByGuest: m.createdByGuest,
+                  isSystemMessage: m.isSystemMessage,
+                })
+              ),
+              assignedTo: updated.assignedTo ?? null,
+            }
           : t
       );
       onThreadsUpdated(updatedThreads);
@@ -128,6 +140,7 @@ export function CommentSidebar({
       const res = await fetch("/api/comments", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ threadId, status: newStatus }),
       });
 
@@ -136,23 +149,34 @@ export function CommentSidebar({
         throw new Error(data.error || "Failed to update status");
       }
 
-      const { systemMessage } = await res.json();
-
-      // Update thread status + add system message
-      const updatedThreads = threads.map((t) => {
-        if (t.id !== threadId) return t;
-        const messages = systemMessage
-          ? [...t.messages, {
-              id: systemMessage.id,
-              body: systemMessage.body,
-              createdAt: new Date(systemMessage.createdAt),
-              createdByUser: null,
-              createdByGuest: null,
-              isSystemMessage: true,
-            }]
-          : t.messages;
-        return { ...t, status: newStatus, messages };
-      });
+      const { thread: updated } = await res.json();
+      const updatedThreads = threads.map((t) =>
+        t.id === threadId
+          ? {
+              id: updated.id,
+              status: updated.status,
+              rootAnnotationId: updated.rootAnnotationId ?? t.rootAnnotationId,
+              messages: (updated.messages ?? []).map(
+                (m: {
+                  id: string;
+                  body: string;
+                  createdAt: string;
+                  createdByUser?: { firstName: string; lastName: string } | null;
+                  createdByGuest?: { name: string } | null;
+                  isSystemMessage: boolean;
+                }) => ({
+                  id: m.id,
+                  body: m.body,
+                  createdAt: new Date(m.createdAt),
+                  createdByUser: m.createdByUser,
+                  createdByGuest: m.createdByGuest,
+                  isSystemMessage: m.isSystemMessage,
+                })
+              ),
+              assignedTo: updated.assignedTo ?? null,
+            }
+          : t
+      );
       onThreadsUpdated(updatedThreads);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to update status");
@@ -169,6 +193,7 @@ export function CommentSidebar({
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           reviewItemId,
           reviewRevisionId: revisionId,
@@ -186,16 +211,25 @@ export function CommentSidebar({
       const newThread: CommentThread = {
         id: thread.id,
         status: thread.status,
-        rootAnnotationId: null,
-        messages: [{
-          id: `msg-${Date.now()}`,
-          body: text,
-          createdAt: new Date(thread.createdAt),
-          createdByUser: { firstName: user.firstName, lastName: user.lastName },
-          createdByGuest: null,
-          isSystemMessage: false,
-        }],
-        assignedTo: null,
+        rootAnnotationId: thread.rootAnnotationId ?? null,
+        messages: (thread.messages ?? []).map(
+          (m: {
+            id: string;
+            body: string;
+            createdAt: string;
+            createdByUser?: { firstName: string; lastName: string } | null;
+            createdByGuest?: { name: string } | null;
+            isSystemMessage: boolean;
+          }) => ({
+            id: m.id,
+            body: m.body,
+            createdAt: new Date(m.createdAt),
+            createdByUser: m.createdByUser,
+            createdByGuest: m.createdByGuest,
+            isSystemMessage: m.isSystemMessage,
+          })
+        ),
+        assignedTo: thread.assignedTo ?? null,
       };
 
       onThreadCreated(newThread);
@@ -218,6 +252,7 @@ export function CommentSidebar({
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           reviewItemId,
           reviewRevisionId: revisionId,
@@ -236,16 +271,25 @@ export function CommentSidebar({
       const newThread: CommentThread = {
         id: thread.id,
         status: thread.status,
-        rootAnnotationId: pendingAnnotationId,
-        messages: [{
-          id: `msg-${Date.now()}`,
-          body: text,
-          createdAt: new Date(thread.createdAt),
-          createdByUser: { firstName: user.firstName, lastName: user.lastName },
-          createdByGuest: null,
-          isSystemMessage: false,
-        }],
-        assignedTo: null,
+        rootAnnotationId: thread.rootAnnotationId ?? pendingAnnotationId,
+        messages: (thread.messages ?? []).map(
+          (m: {
+            id: string;
+            body: string;
+            createdAt: string;
+            createdByUser?: { firstName: string; lastName: string } | null;
+            createdByGuest?: { name: string } | null;
+            isSystemMessage: boolean;
+          }) => ({
+            id: m.id,
+            body: m.body,
+            createdAt: new Date(m.createdAt),
+            createdByUser: m.createdByUser,
+            createdByGuest: m.createdByGuest,
+            isSystemMessage: m.isSystemMessage,
+          })
+        ),
+        assignedTo: thread.assignedTo ?? null,
       };
 
       onThreadCreated(newThread);

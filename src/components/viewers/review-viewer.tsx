@@ -507,7 +507,8 @@ export function ReviewViewer({
       void (async () => {
         try {
           const res = await fetch(
-            `/api/comments?reviewItemId=${encodeURIComponent(reviewItem.id)}`
+            `/api/comments?reviewItemId=${encodeURIComponent(reviewItem.id)}`,
+            { credentials: "same-origin" }
           );
           if (!res.ok) return;
           const data = (await res.json()) as { threads?: CommentThread[] };
@@ -751,6 +752,7 @@ export function ReviewViewer({
       const res = await fetch("/api/comments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           reviewItemId: reviewItem.id,
           reviewRevisionId: displayRevision?.id,
@@ -871,6 +873,7 @@ export function ReviewViewer({
         const res = await fetch("/api/comments", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({
             threadId,
             body: replyText.trim(),
@@ -917,6 +920,7 @@ export function ReviewViewer({
         const res = await fetch("/api/comments", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({ threadId, status }),
         });
         if (!res.ok) throw new Error("Failed to update status");
@@ -941,6 +945,7 @@ export function ReviewViewer({
     try {
       const res = await fetch(`/api/comments?threadId=${threadId}`, {
         method: "DELETE",
+        credentials: "same-origin",
       });
       if (!res.ok) throw new Error("Failed to delete");
       setThreads((prev) => prev.filter((t) => t.id !== threadId));

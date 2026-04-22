@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db, UserRole, ProjectRole, ActivityActionType, CommentStatus } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
+import { coerceSessionRole } from "@/lib/auth/session-role";
 import { commentThreadSchema, commentReplySchema, updateThreadStatusSchema } from "@/lib/validations/comment";
 import { saveContextPngFromBase64 } from "@/lib/server/save-context-screenshot";
 import { isMissingAnnotationPinColumnsError } from "@/lib/db/review-item-annotations";
+import { extractPrismaDbError } from "@/lib/db/prisma-error";
 
 /** Large pin screenshots + DB + disk I/O can exceed default serverless limits. */
 export const maxDuration = 60;
@@ -13,8 +15,22 @@ export const maxDuration = 60;
 export async function GET(request: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user) {
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const actor = await db.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, isActive: true },
+    });
+    if (!actor?.isActive) {
+      return NextResponse.json(
+        {
+          error:
+            "Your session is out of date (user not found). Sign out and sign in again.",
+        },
+        { status: 401 }
+      );
     }
 
     const { searchParams } = new URL(request.url);
@@ -42,11 +58,12 @@ export async function GET(request: NextRequest) {
     }
 
     const userMembership = reviewItem.project.members.find(
-      (m) => m.userId === session.user.id
+      (m) => m.userId === actor.id
     );
 
+    const userRole = coerceSessionRole(session.user.role);
     if (
-      !Permissions.canAccessAdminPanel(session.user.role as UserRole) &&
+      !Permissions.canAccessAdminPanel(userRole) &&
       !userMembership
     ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -86,8 +103,22 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user) {
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const actor = await db.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, isActive: true },
+    });
+    if (!actor?.isActive) {
+      return NextResponse.json(
+        {
+          error:
+            "Your session is out of date (user not found). Sign out and sign in again.",
+        },
+        { status: 401 }
+      );
     }
 
     const body = await request.json();
@@ -126,18 +157,35 @@ export async function POST(request: NextRequest) {
     }
 
     const userMembership = reviewItem.project.members.find(
-      (m) => m.userId === session.user.id
+      (m) => m.userId === actor.id
     );
 
+    const userRole = coerceSessionRole(session.user.role);
     if (
       !Permissions.canCreateComment(
-        session.user.role as UserRole,
+        userRole,
         userMembership?.roleInProject as ProjectRole | null,
         reviewItem.guestCommentingEnabled,
         false
       )
     ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    if (reviewRevisionId) {
+      const rev = await db.reviewRevision.findFirst({
+        where: { id: reviewRevisionId, reviewItemId },
+        select: { id: true },
+      });
+      if (!rev) {
+        return NextResponse.json(
+          {
+            error:
+              "This revision is no longer valid for this review item. Refresh the page and try again.",
+          },
+          { status: 400 }
+        );
+      }
     }
 
     // Create thread and first message in transaction (no filesystem I/O here —
@@ -149,7 +197,7 @@ export async function POST(request: NextRequest) {
           reviewRevisionId,
           rootAnnotationId,
           status: "OPEN",
-          createdByUserId: session.user.id,
+          createdByUserId: actor.id,
         },
       });
 
@@ -159,7 +207,7 @@ export async function POST(request: NextRequest) {
           body: initialMessage.trim(),
           attachments:
             attachments && attachments.length > 0 ? attachments : undefined,
-          createdByUserId: session.user.id,
+          createdByUserId: actor.id,
         },
       });
 
@@ -241,7 +289,7 @@ export async function POST(request: NextRequest) {
         entityType: "ReviewItem",
         entityId: reviewItemId,
         actionType: ActivityActionType.COMMENT_THREAD_CREATED,
-        actorUserId: session.user.id,
+        actorUserId: actor.id,
         metaJson: JSON.stringify({
           threadId: result.thread.id,
           hasAnnotation: !!rootAnnotationId,
@@ -275,8 +323,23 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     console.error("Error creating comment thread:", error);
+    const { prismaCode } = extractPrismaDbError(error);
+    if (prismaCode === "P2003") {
+      return NextResponse.json(
+        {
+          error:
+            "Could not save the comment (database rejected a link—often a stale session or outdated revision). Sign out, sign in, refresh this page, then retry.",
+        },
+        { status: 409 }
+      );
+    }
     return NextResponse.json(
-      { error: "Failed to create comment thread" },
+      {
+        error: "Failed to create comment thread",
+        ...(process.env.NODE_ENV === "development" && error instanceof Error
+          ? { details: error.message }
+          : {}),
+      },
       { status: 500 }
     );
   }
@@ -288,8 +351,22 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user) {
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const actor = await db.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, isActive: true },
+    });
+    if (!actor?.isActive) {
+      return NextResponse.json(
+        {
+          error:
+            "Your session is out of date (user not found). Sign out and sign in again.",
+        },
+        { status: 401 }
+      );
     }
 
     const body = await request.json();
@@ -318,12 +395,13 @@ export async function PATCH(request: NextRequest) {
     }
 
     const userMembership = thread.reviewItem.project.members.find(
-      (m) => m.userId === session.user.id
+      (m) => m.userId === actor.id
     );
 
+    const userRole = coerceSessionRole(session.user.role);
     if (
       !Permissions.canCreateComment(
-        session.user.role as UserRole,
+        userRole,
         userMembership?.roleInProject as ProjectRole | null,
         thread.reviewItem.guestCommentingEnabled,
         false
@@ -366,7 +444,7 @@ export async function PATCH(request: NextRequest) {
         data: {
           threadId,
           body: `Status changed from ${statusLabels[oldStatus] ?? oldStatus} to ${statusLabels[newStatus] ?? newStatus}`,
-          createdByUserId: session.user.id,
+          createdByUserId: actor.id,
           isSystemMessage: true,
         },
       });
@@ -376,7 +454,7 @@ export async function PATCH(request: NextRequest) {
           entityType: "ReviewItem",
           entityId: thread.reviewItemId,
           actionType: ActivityActionType.STATUS_CHANGED,
-          actorUserId: session.user.id,
+          actorUserId: actor.id,
           metaJson: JSON.stringify({ threadId, oldStatus, newStatus }),
         },
       });
@@ -414,7 +492,7 @@ export async function PATCH(request: NextRequest) {
           validated.data.attachments && validated.data.attachments.length > 0
             ? validated.data.attachments
             : undefined,
-        createdByUserId: session.user.id,
+        createdByUserId: actor.id,
       },
     });
 
@@ -423,7 +501,7 @@ export async function PATCH(request: NextRequest) {
         entityType: "ReviewItem",
         entityId: thread.reviewItemId,
         actionType: ActivityActionType.COMMENT_REPLY_ADDED,
-        actorUserId: session.user.id,
+        actorUserId: actor.id,
         metaJson: JSON.stringify({ threadId }),
       },
     });
@@ -455,8 +533,22 @@ export async function PATCH(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const session = await auth();
-    if (!session?.user) {
+    if (!session?.user?.id) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const actor = await db.user.findUnique({
+      where: { id: session.user.id },
+      select: { id: true, isActive: true },
+    });
+    if (!actor?.isActive) {
+      return NextResponse.json(
+        {
+          error:
+            "Your session is out of date (user not found). Sign out and sign in again.",
+        },
+        { status: 401 }
+      );
     }
 
     const { searchParams } = new URL(request.url);
@@ -474,9 +566,9 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "Thread not found" }, { status: 404 });
     }
 
-    const role = session.user.role as UserRole;
+    const role = coerceSessionRole(session.user.role);
     const isOwnerOrAdmin = role === UserRole.OWNER || role === UserRole.ADMIN;
-    const isCreator = thread.createdByUserId === session.user.id;
+    const isCreator = thread.createdByUserId === actor.id;
     if (!isOwnerOrAdmin && !isCreator) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
