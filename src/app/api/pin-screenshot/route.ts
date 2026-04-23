@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import sharp from "sharp";
 import { auth } from "@/lib/auth";
 import { db, ProjectRole } from "@/lib/db/client";
 import { Permissions } from "@/lib/auth/permissions";
@@ -180,18 +181,12 @@ export async function POST(request: NextRequest) {
       viewport_height: String(viewportHeight),
       format: "png",
       full_page: "true",
-      full_page_scroll: "true",
-      full_page_scroll_delay: "500",
       delay: "2",
       block_ads: "true",
       block_cookie_banners: "true",
       block_trackers: "true",
       cache: "true",
       cache_ttl: "14400",
-      clip_x: "0",
-      clip_y: String(scrollY),
-      clip_width: String(viewportWidth),
-      clip_height: String(viewportHeight),
     });
 
     const takeUrl = `${SCREENSHOTONE_TAKE}?${params.toString()}`;
@@ -238,12 +233,80 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const buf = await res.arrayBuffer();
-    console.log("[pin-screenshot] image bytes:", buf.byteLength);
+    const fullPageBuffer = Buffer.from(await res.arrayBuffer());
+    console.log("[pin-screenshot] image bytes:", fullPageBuffer.byteLength);
 
-    const b64 = Buffer.from(buf).toString("base64");
-    const dataUrl = `data:image/png;base64,${b64}`;
+    let croppedBuffer: Buffer;
+    let cropTop: number;
+    let cropHeight: number;
+    let fullW: number;
+    let fullH: number;
+    try {
+      const image = sharp(fullPageBuffer);
+      const meta = await image.metadata();
+      fullW = meta.width ?? viewportWidth;
+      fullH = meta.height ?? viewportHeight;
 
+      const scaleX = fullW / viewportWidth;
+      const scaleY = scaleX;
+      const cropLeft = 0;
+      cropTop = Math.max(0, Math.round(scrollY * scaleY));
+      let cropWidth = Math.min(fullW, Math.round(viewportWidth * scaleX));
+      cropHeight = Math.min(fullH - cropTop, Math.round(viewportHeight * scaleY));
+      if (cropHeight <= 0) {
+        cropHeight = Math.min(fullH, Math.round(viewportHeight * scaleY));
+        cropTop = Math.max(0, fullH - cropHeight);
+      }
+      cropWidth = Math.min(cropWidth, fullW - cropLeft);
+      cropHeight = Math.min(cropHeight, fullH - cropTop);
+      if (cropLeft + cropWidth > fullW) {
+        cropWidth = Math.max(0, fullW - cropLeft);
+      }
+      if (cropTop + cropHeight > fullH) {
+        cropHeight = Math.max(0, fullH - cropTop);
+      }
+
+      if (cropWidth < 1 || cropHeight < 1) {
+        console.error("[pin-screenshot] invalid crop dimensions", {
+          cropLeft,
+          cropTop,
+          cropWidth,
+          cropHeight,
+          fullW,
+          fullH,
+        });
+        return NextResponse.json(
+          { error: "Failed to process screenshot: invalid crop region" },
+          { status: 502 }
+        );
+      }
+
+      croppedBuffer = await sharp(fullPageBuffer)
+        .extract({
+          left: cropLeft,
+          top: cropTop,
+          width: cropWidth,
+          height: cropHeight,
+        })
+        .png()
+        .toBuffer();
+    } catch (err) {
+      console.error("[pin-screenshot] sharp error:", err);
+      return NextResponse.json(
+        { error: "Failed to process screenshot image" },
+        { status: 502 }
+      );
+    }
+
+    console.log("[pin-screenshot] cropped", {
+      fullW,
+      fullH,
+      cropTop,
+      cropHeight,
+      scrollY,
+    });
+
+    const dataUrl = `data:image/png;base64,${croppedBuffer.toString("base64")}`;
     const saved = await saveContextPngFromBase64(dataUrl);
     if (!saved.ok) {
       console.error("[pin-screenshot] saveContextPngFromBase64:", saved.error);
