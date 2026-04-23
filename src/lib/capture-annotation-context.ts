@@ -360,40 +360,62 @@ export async function captureIframeViewport(
   try {
     const vt = viewportForCapture(doc, win, iframe, options?.frozen);
     const el = vt.el;
+    const html = doc.documentElement;
     const prevSL = el.scrollLeft;
     const prevST = el.scrollTop;
-    // domToPng does not take scroll offsets — it clones whatever the live DOM shows.
-    // Async capture often runs after scroll has reset, so force the viewport we froze (or resolved).
-    el.scrollLeft = vt.scrollLeft;
-    el.scrollTop = vt.scrollTop;
+    const prevHtmlSL = html.scrollLeft;
+    const prevHtmlST = html.scrollTop;
+    const prevWinX = win.scrollX;
+    const prevWinY = win.scrollY;
 
     let dataUrl: string | null = null;
     try {
+      const rect = iframe.getBoundingClientRect();
+      const outerOffset =
+        rect.top < 0 ? Math.round(-rect.top) : 0;
+
+      // Outer page scroll clips the iframe from above; the inner document often stays at scroll 0.
+      // Move the iframe document/window so the visible region matches what the user sees, then capture.
+      doc.documentElement.scrollTo(0, outerOffset);
+      win.scrollTo(0, outerOffset);
+
+      el.scrollLeft = vt.scrollLeft;
+      el.scrollTop = vt.scrollTop;
+
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
       );
+
+      // domToPng is viewport-sized; scroll fields are unused — keep zeros for root after physical scroll.
+      const captureVt: ViewportTarget =
+        vt.kind === "root"
+          ? { ...vt, scrollLeft: 0, scrollTop: 0 }
+          : vt;
+
+      const cropSL = el.scrollLeft;
+      const cropST = el.scrollTop;
+
       const canHeavy = options?.allowHeavyFallback === true;
       const preferAccuracy = options?.preferAccuracy === true;
 
       if (preferAccuracy && canHeavy) {
-        // Accuracy path first: full render + explicit crop using vt scroll.
         dataUrl = await renderFullAndCropViewport(
           vt.el,
-          vt.scrollLeft,
-          vt.scrollTop,
+          cropSL,
+          cropST,
           vt.viewW,
           vt.viewH
         );
         if (!dataUrl) {
-          dataUrl = await captureWithModernScreenshot(doc, vt);
+          dataUrl = await captureWithModernScreenshot(doc, captureVt);
         }
       } else {
-        dataUrl = await captureWithModernScreenshot(doc, vt);
+        dataUrl = await captureWithModernScreenshot(doc, captureVt);
         if (!dataUrl && canHeavy) {
           dataUrl = await renderFullAndCropViewport(
             vt.el,
-            vt.scrollLeft,
-            vt.scrollTop,
+            cropSL,
+            cropST,
             vt.viewW,
             vt.viewH
           );
@@ -402,6 +424,9 @@ export async function captureIframeViewport(
     } finally {
       el.scrollLeft = prevSL;
       el.scrollTop = prevST;
+      html.scrollLeft = prevHtmlSL;
+      html.scrollTop = prevHtmlST;
+      win.scrollTo(prevWinX, prevWinY);
     }
 
     if (!dataUrl) return null;
