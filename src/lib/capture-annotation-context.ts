@@ -133,7 +133,11 @@ function resolveViewportTarget(
 export type ViewportPinFocus = { x: number; y: number };
 
 /** Snapshot from `freezeIframeViewport` — pass into `captureIframeViewport` so async capture matches submit-time scroll. */
-export type FrozenIframeViewport = ViewportTarget & { outerOffset: number };
+export type FrozenIframeViewport = ViewportTarget & {
+  outerOffset: number;
+  /** `documentElement.scrollTop` / `scrollY` inside the iframe at freeze time. */
+  iframeInternalScrollY: number;
+};
 
 function findOuterScrollContainer(iframe: HTMLIFrameElement): HTMLElement | null {
   const parentDoc = iframe.ownerDocument;
@@ -152,17 +156,6 @@ function findOuterScrollContainer(iframe: HTMLIFrameElement): HTMLElement | null
     node = node.parentElement;
   }
   return null;
-}
-
-/** Matches the iframe-rect contribution inside `resolveViewportTarget` so we can combine with parent `outerOffset`. */
-function computeIframeRectOuterScroll(iframe: HTMLIFrameElement): number {
-  try {
-    const rect = iframe.getBoundingClientRect();
-    if (rect.top < 0) return Math.round(-rect.top);
-  } catch {
-    /* ignore */
-  }
-  return 0;
 }
 
 function computeParentOuterScrollOffset(iframe: HTMLIFrameElement): number {
@@ -218,7 +211,10 @@ export function freezeIframeViewport(
   try {
     const vt = resolveViewportTarget(doc, win, iframe);
     const outerOffset = computeParentOuterScrollOffset(iframe);
-    return { ...vt, outerOffset };
+    const iframeInternalScrollY = Math.round(
+      doc.documentElement.scrollTop || win.scrollY || 0
+    );
+    return { ...vt, outerOffset, iframeInternalScrollY };
   } catch {
     return null;
   }
@@ -235,7 +231,11 @@ function viewportForCapture(
     frozen.el.isConnected &&
     frozen.el.ownerDocument === doc
   ) {
-    const { outerOffset: _outer, ...vt } = frozen;
+    const {
+      outerOffset: _outer,
+      iframeInternalScrollY: _isy,
+      ...vt
+    } = frozen;
     return vt;
   }
   return resolveViewportTarget(doc, win, iframe);
@@ -433,51 +433,41 @@ export async function captureIframeViewport(
     const prevWinY = win.scrollY;
 
     const frozen = options?.frozen ?? null;
-    const outerOffset =
+    let outerOffset = computeParentOuterScrollOffset(iframe);
+    let iframeInternalScroll = Math.round(
+      doc.documentElement.scrollTop || win.scrollY || 0
+    );
+    if (
       frozen?.el &&
       frozen.el.isConnected &&
       frozen.el.ownerDocument === doc
-        ? frozen.outerOffset
-        : computeParentOuterScrollOffset(iframe);
+    ) {
+      outerOffset = frozen.outerOffset;
+      iframeInternalScroll = frozen.iframeInternalScrollY;
+    }
+    const scrollTargetY =
+      iframeInternalScroll > 0 ? iframeInternalScroll : outerOffset;
 
     let dataUrl: string | null = null;
     const prevScrollBehavior = html.style.scrollBehavior;
     html.style.scrollBehavior = "auto";
     try {
-      const iframeRectOuter = computeIframeRectOuterScroll(iframe);
-      const innerOnlyY =
-        vt.kind === "root"
-          ? Math.max(0, vt.scrollTop - iframeRectOuter)
-          : 0;
-
       if (vt.kind === "root") {
-        const top = outerOffset + innerOnlyY;
         try {
           win.scrollTo({
-            top,
+            top: scrollTargetY,
             left: vt.scrollLeft,
             behavior: "instant",
           });
         } catch {
           el.scrollLeft = vt.scrollLeft;
-          el.scrollTop = top;
-        }
-        if (el !== html) {
-          try {
-            html.scrollTo({
-              top: outerOffset,
-              left: html.scrollLeft,
-              behavior: "instant",
-            });
-          } catch {
-            html.scrollTop = outerOffset;
-          }
+          el.scrollTop = scrollTargetY;
         }
       } else {
         try {
-          win.scrollTo({ top: outerOffset, left: 0, behavior: "instant" });
+          win.scrollTo({ top: scrollTargetY, left: 0, behavior: "instant" });
         } catch {
-          win.scrollTo(0, outerOffset);
+          win.scrollTo(0, scrollTargetY);
         }
         try {
           el.scrollTo({
