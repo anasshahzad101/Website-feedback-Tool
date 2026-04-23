@@ -62,6 +62,13 @@ enum CommentStatus {
   IGNORED
 }
 
+enum ScreenshotCaptureStatus {
+  PENDING
+  CAPTURING
+  READY
+  FAILED
+}
+
 enum ActivityActionType {
   CLIENT_CREATED
   PROJECT_CREATED
@@ -243,6 +250,9 @@ model ReviewRevision {
   sourceUrl        String?  @map("source_url")
   snapshotPath     String?  @map("snapshot_path")
   notes            String?
+  screenshotStatus     ScreenshotCaptureStatus @default(PENDING) @map("screenshot_status")
+  screenshotCapturedAt DateTime?               @map("screenshot_captured_at")
+  screenshotError      String?                 @map("screenshot_error")
   createdById      String   @map("created_by_id")
   createdAt        DateTime @default(now()) @map("created_at")
 
