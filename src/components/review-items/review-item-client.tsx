@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { ReviewItemHeader } from "@/components/review-items/review-item-header";
 import { ReviewViewer, type Annotation, type CommentThread } from "@/components/viewers/review-viewer";
-import { ReviewItemType, ReviewMode, CommentStatus, ProjectRole } from "@prisma/client";
+import {
+  ReviewItemType,
+  ReviewMode,
+  CommentStatus,
+  ProjectRole,
+  ScreenshotCaptureStatus,
+} from "@prisma/client";
 
 interface Revision {
   id: string;
@@ -12,6 +18,8 @@ interface Revision {
   sourceUrl?: string | null;
   uploadedFilePath?: string | null;
   snapshotPath?: string | null;
+  screenshotStatus?: ScreenshotCaptureStatus;
+  screenshotError?: string | null;
 }
 
 interface ReviewItemClientProps {

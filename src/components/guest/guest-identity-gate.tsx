@@ -8,9 +8,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 
+export type GuestIdentityPayload = {
+  id: string;
+  name: string;
+  email?: string | null;
+  accessToken: string;
+};
+
 interface GuestIdentityGateProps {
   shareToken: string;
-  onIdentityEstablished: (identity: { id: string; name: string; email?: string }) => void;
+  onIdentityEstablished: (identity: GuestIdentityPayload) => void;
 }
 
 export function GuestIdentityGate({ shareToken, onIdentityEstablished }: GuestIdentityGateProps) {

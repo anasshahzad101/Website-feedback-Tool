@@ -16,7 +16,13 @@ import {
 import { CommentThreadDetailDialog } from "@/components/comments/comment-thread-detail-dialog";
 import { ContextScreenshotWithPin } from "@/components/comments/context-screenshot-with-pin";
 import { uploadCommentFiles, messageHasAttachments } from "@/lib/comment-attachments";
-import { CommentStatus, ProjectRole, ReviewItemType, ReviewMode } from "@prisma/client";
+import {
+  CommentStatus,
+  ProjectRole,
+  ReviewItemType,
+  ReviewMode,
+  ScreenshotCaptureStatus,
+} from "@prisma/client";
 import { AnnotationLayer, type NewAnnotation, type Annotation } from "@/components/annotations/annotation-layer";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -100,6 +106,8 @@ interface ReviewViewerProps {
     snapshotPath?: string | null;
     revisionLabel?: string | null;
     revisionDate: Date;
+    screenshotStatus?: ScreenshotCaptureStatus;
+    screenshotError?: string | null;
   } | null;
   selectedRevisionId?: string | null;
   revisions: Array<{
@@ -109,9 +117,13 @@ interface ReviewViewerProps {
     sourceUrl?: string | null;
     uploadedFilePath?: string | null;
     snapshotPath?: string | null;
+    screenshotStatus?: ScreenshotCaptureStatus;
+    screenshotError?: string | null;
   }>;
   user: { id: string; role: string; firstName: string; lastName: string };
   userRole: ProjectRole | null;
+  /** Guest share + identity tokens for capture API (same pattern as /api/guest/comment). */
+  captureGuestAuth?: { guestToken: string; shareToken: string };
 }
 
 /** Marker on the context screenshot: prefer stored pin-in-crop fractions; else legacy heuristics for old data. */
@@ -218,6 +230,7 @@ export function ReviewViewer({
   selectedRevisionId,
   revisions,
   user,
+  captureGuestAuth,
 }: ReviewViewerProps) {
   const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations);
   const [threads, setThreads] = useState<CommentThread[]>(initialThreads);
@@ -267,6 +280,20 @@ export function ReviewViewer({
     if (reviewItem.type !== "WEBSITE") return "live";
     return reviewItem.reviewMode === ReviewMode.SCREENSHOT_CAPTURE ? "screenshot" : "live";
   });
+  const [websiteCaptureStatus, setWebsiteCaptureStatus] =
+    useState<ScreenshotCaptureStatus | null>(() =>
+      reviewItem.type === "WEBSITE"
+        ? (currentRevision?.screenshotStatus ?? ScreenshotCaptureStatus.PENDING)
+        : null
+    );
+  const [websiteCaptureError, setWebsiteCaptureError] = useState<string | null>(() =>
+    reviewItem.type === "WEBSITE" ? (currentRevision?.screenshotError ?? null) : null
+  );
+  const [localWebsiteSnapshotPath, setLocalWebsiteSnapshotPath] = useState<string | null>(
+    null
+  );
+  const websiteCaptureBootKeyRef = useRef<string | null>(null);
+  const websitePollCountRef = useRef(0);
   // Pending pin (not saved until comment is submitted); cleared on cancel or when placing another pin.
   const [pendingAnnotation, setPendingAnnotation] = useState<NewAnnotation | null>(null);
   /** Markup-style sidebar: filter + search */
@@ -292,19 +319,45 @@ export function ReviewViewer({
     : currentRevision;
 
   const effectiveSourceUrl = displayRevision?.sourceUrl || reviewItem.sourceUrl;
+  const websiteHasStaticReadyImage =
+    reviewItem.type === "WEBSITE" &&
+    websiteCaptureStatus === ScreenshotCaptureStatus.READY &&
+    !!(localWebsiteSnapshotPath ?? displayRevision?.snapshotPath);
+  const websiteInCaptureWait =
+    websiteCaptureStatus === ScreenshotCaptureStatus.PENDING ||
+    websiteCaptureStatus === ScreenshotCaptureStatus.CAPTURING;
+  const websiteCaptureFailedUi =
+    websiteCaptureStatus === ScreenshotCaptureStatus.FAILED;
   // Only apply local "Capture" override in website screenshot mode — never let
   // that path replace the main asset for IMAGE/PDF/VIDEO reviews.
   const effectiveFilePath =
     (reviewItem.type === "WEBSITE" && websiteViewMode === "screenshot"
       ? capturedPath
       : null) ||
+    (websiteHasStaticReadyImage
+      ? (localWebsiteSnapshotPath ?? displayRevision?.snapshotPath ?? null)
+      : null) ||
     displayRevision?.snapshotPath ||
     displayRevision?.uploadedFilePath ||
     reviewItem.uploadedFilePath;
 
   const isWebsite = reviewItem.type === "WEBSITE";
-  // For websites, show an "annotate / browse" mode toggle
-  const showModeToggle = isWebsite && !!effectiveSourceUrl;
+  const websiteContentPhase:
+    | "static"
+    | "placeholder"
+    | "failed"
+    | "iframe" = (() => {
+    if (!isWebsite || !effectiveSourceUrl) return "iframe";
+    if (websiteHasStaticReadyImage) return "static";
+    if (websiteInCaptureWait) return "placeholder";
+    if (websiteCaptureFailedUi) return "failed";
+    return "iframe";
+  })();
+  // Annotate / browse toggle only when showing the live iframe fallback (not static capture UI).
+  const showModeToggle =
+    isWebsite &&
+    !!effectiveSourceUrl &&
+    websiteContentPhase === "iframe";
 
   const remeasureContent = useCallback(() => {
     const el = contentRef.current;
@@ -348,6 +401,181 @@ export function ReviewViewer({
       return [];
     });
   }, []);
+
+  const triggerWebsiteCapture = useCallback(
+    async (revisionId: string) => {
+      if (reviewItem.type !== "WEBSITE") return;
+      setWebsiteCaptureError(null);
+      try {
+        const payload: Record<string, string> = {
+          reviewRevisionId: revisionId,
+          reviewItemId: reviewItem.id,
+        };
+        if (captureGuestAuth) {
+          payload.guestToken = captureGuestAuth.guestToken;
+          payload.shareToken = captureGuestAuth.shareToken;
+        }
+        const res = await fetch("/api/capture-website-screenshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify(payload),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          status?: string;
+          snapshotPath?: string;
+          error?: string;
+        };
+        if (res.ok && data.status === "READY") {
+          setWebsiteCaptureStatus(ScreenshotCaptureStatus.READY);
+          if (data.snapshotPath) setLocalWebsiteSnapshotPath(data.snapshotPath);
+          return;
+        }
+        if (res.status === 202 && data.status === "CAPTURING") {
+          setWebsiteCaptureStatus(ScreenshotCaptureStatus.CAPTURING);
+          return;
+        }
+        const err =
+          data.error ||
+          (res.status >= 400 ? `Request failed (${res.status})` : "Capture failed");
+        setWebsiteCaptureStatus(ScreenshotCaptureStatus.FAILED);
+        setWebsiteCaptureError(err);
+      } catch (e) {
+        setWebsiteCaptureStatus(ScreenshotCaptureStatus.FAILED);
+        setWebsiteCaptureError(e instanceof Error ? e.message : "Capture failed");
+      }
+    },
+    [reviewItem.type, reviewItem.id, captureGuestAuth]
+  );
+
+  useEffect(() => {
+    if (reviewItem.type !== "WEBSITE") return;
+    websiteCaptureBootKeyRef.current = null;
+  }, [reviewItem.type, displayRevision?.id]);
+
+  useEffect(() => {
+    if (reviewItem.type !== "WEBSITE" || !displayRevision?.id || !effectiveSourceUrl)
+      return;
+
+    const st =
+      displayRevision.screenshotStatus ?? ScreenshotCaptureStatus.PENDING;
+    const snap = displayRevision.snapshotPath;
+
+    if (st === ScreenshotCaptureStatus.READY && snap) {
+      setWebsiteCaptureStatus(ScreenshotCaptureStatus.READY);
+      setWebsiteCaptureError(null);
+      setLocalWebsiteSnapshotPath(null);
+      websiteCaptureBootKeyRef.current = displayRevision.id;
+      return;
+    }
+
+    if (st === ScreenshotCaptureStatus.CAPTURING) {
+      setWebsiteCaptureStatus(ScreenshotCaptureStatus.CAPTURING);
+      setWebsiteCaptureError(null);
+      websiteCaptureBootKeyRef.current = displayRevision.id;
+      return;
+    }
+
+    if (st === ScreenshotCaptureStatus.FAILED) {
+      setWebsiteCaptureStatus(ScreenshotCaptureStatus.FAILED);
+      setWebsiteCaptureError(displayRevision.screenshotError ?? "Capture failed");
+      websiteCaptureBootKeyRef.current = displayRevision.id;
+      return;
+    }
+
+    if (websiteCaptureBootKeyRef.current === displayRevision.id) return;
+    websiteCaptureBootKeyRef.current = displayRevision.id;
+
+    void triggerWebsiteCapture(displayRevision.id);
+  }, [
+    reviewItem.type,
+    displayRevision?.id,
+    displayRevision?.screenshotStatus,
+    displayRevision?.screenshotError,
+    displayRevision?.snapshotPath,
+    effectiveSourceUrl,
+    triggerWebsiteCapture,
+  ]);
+
+  useEffect(() => {
+    if (reviewItem.type !== "WEBSITE" || !displayRevision?.id) return;
+    if (websiteCaptureStatus !== ScreenshotCaptureStatus.CAPTURING) return;
+
+    let cancelled = false;
+    websitePollCountRef.current = 0;
+
+    const tick = async () => {
+      if (cancelled) return;
+      if (websitePollCountRef.current >= 40) {
+        if (!cancelled) {
+          setWebsiteCaptureStatus(ScreenshotCaptureStatus.FAILED);
+          setWebsiteCaptureError("Screenshot capture timed out. Try Retry.");
+        }
+        return;
+      }
+      websitePollCountRef.current += 1;
+      const params = new URLSearchParams({
+        reviewRevisionId: displayRevision.id,
+        reviewItemId: reviewItem.id,
+      });
+      if (captureGuestAuth) {
+        params.set("guestToken", captureGuestAuth.guestToken);
+        params.set("shareToken", captureGuestAuth.shareToken);
+      }
+      try {
+        const res = await fetch(
+          `/api/capture-website-screenshot?${params.toString()}`,
+          { credentials: "same-origin" }
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          status?: string;
+          snapshotPath?: string | null;
+          error?: string | null;
+        };
+        if (cancelled) return;
+        if (data.status === ScreenshotCaptureStatus.READY) {
+          setWebsiteCaptureStatus(ScreenshotCaptureStatus.READY);
+          if (data.snapshotPath) setLocalWebsiteSnapshotPath(data.snapshotPath);
+          setWebsiteCaptureError(null);
+          return;
+        }
+        if (data.status === ScreenshotCaptureStatus.FAILED) {
+          setWebsiteCaptureStatus(ScreenshotCaptureStatus.FAILED);
+          setWebsiteCaptureError(data.error || "Capture failed");
+        }
+      } catch {
+        if (!cancelled) {
+          setWebsiteCaptureStatus(ScreenshotCaptureStatus.FAILED);
+          setWebsiteCaptureError("Failed to check capture status");
+        }
+      }
+    };
+
+    const iv = setInterval(() => void tick(), 3000);
+    void tick();
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [
+    reviewItem.type,
+    reviewItem.id,
+    displayRevision?.id,
+    websiteCaptureStatus,
+    captureGuestAuth,
+  ]);
+
+  useEffect(() => {
+    if (reviewItem.type !== "WEBSITE" || !displayRevision?.snapshotPath) return;
+    if (displayRevision.screenshotStatus === ScreenshotCaptureStatus.READY) {
+      setLocalWebsiteSnapshotPath(null);
+    }
+  }, [
+    reviewItem.type,
+    displayRevision?.id,
+    displayRevision?.snapshotPath,
+    displayRevision?.screenshotStatus,
+  ]);
 
   const addComposeFiles = useCallback((list: FileList | File[]) => {
     const arr = Array.from(list);
@@ -592,7 +820,9 @@ export function ReviewViewer({
 
       if (annotationForContext && annotationId) {
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
-          if (websiteViewMode === "live") {
+          const useLivePinCapture =
+            websiteViewMode === "live" && !websiteHasStaticReadyImage;
+          if (useLivePinCapture) {
             const iframe = getLiveWebsiteIframe();
             let iframeScrollY = 0;
             let iframeViewportW = 1280;
@@ -785,6 +1015,7 @@ export function ReviewViewer({
     effectiveSourceUrl,
     effectiveFilePath,
     websiteViewMode,
+    websiteHasStaticReadyImage,
     annotations,
     getLiveWebsiteIframe,
   ]);
@@ -1171,8 +1402,9 @@ export function ReviewViewer({
       : 0;
 
   // In "browse" mode on an iframe, disable the annotation layer so the site is clickable.
-  // Allow pin placement in both live and screenshot mode for websites.
-  const annotationLayerActive = interactionMode === "annotate";
+  // Static website screenshots behave like IMAGE: always allow annotate overlay on the raster.
+  const annotationLayerActive =
+    websiteHasStaticReadyImage || interactionMode === "annotate";
 
   return (
     <>
@@ -1278,6 +1510,20 @@ export function ReviewViewer({
                 sourceUrl={effectiveSourceUrl}
                 filePath={effectiveFilePath}
                 websiteViewMode={websiteViewMode}
+                websiteContentPhase={
+                  isWebsite && effectiveSourceUrl ? websiteContentPhase : undefined
+                }
+                websiteCaptureError={websiteCaptureError}
+                onWebsiteCaptureRetry={() => {
+                  if (displayRevision?.id) void triggerWebsiteCapture(displayRevision.id);
+                }}
+                staticWebsiteFilePath={
+                  websiteHasStaticReadyImage
+                    ? (localWebsiteSnapshotPath ??
+                        displayRevision?.snapshotPath ??
+                        null)
+                    : null
+                }
                 onRasterLayoutChange={remeasureContent}
                 liveIframeRef={websiteLiveIframeRef}
               />
@@ -1817,6 +2063,10 @@ function ContentDisplay({
   sourceUrl,
   filePath,
   websiteViewMode = "live",
+  websiteContentPhase,
+  websiteCaptureError,
+  onWebsiteCaptureRetry,
+  staticWebsiteFilePath,
   onRasterLayoutChange,
   liveIframeRef,
 }: {
@@ -1824,6 +2074,10 @@ function ContentDisplay({
   sourceUrl: string | null;
   filePath: string | null;
   websiteViewMode?: "live" | "screenshot";
+  websiteContentPhase?: "static" | "placeholder" | "failed" | "iframe";
+  websiteCaptureError?: string | null;
+  onWebsiteCaptureRetry?: () => void;
+  staticWebsiteFilePath?: string | null;
   onRasterLayoutChange?: () => void;
   liveIframeRef?: RefObject<HTMLIFrameElement | null>;
 }) {
@@ -1855,6 +2109,52 @@ function ContentDisplay({
 
   // ── WEBSITE ──────────────────────────────────────────────────────────────
   if (type === "WEBSITE" && sourceUrl) {
+    if (websiteContentPhase === "static" && staticWebsiteFilePath) {
+      return (
+        <div className="relative w-full bg-white">
+          <img
+            src={`/uploads${staticWebsiteFilePath}`}
+            alt="Website screenshot"
+            className="w-full h-auto block"
+            draggable={false}
+            onLoad={onRasterLayoutChange}
+          />
+        </div>
+      );
+    }
+
+    if (websiteContentPhase === "placeholder") {
+      return (
+        <div className="flex items-center justify-center min-h-[600px] bg-muted/30">
+          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+            <Loader2 className="h-8 w-8 animate-spin" />
+            <span className="text-sm font-medium">Capturing screenshot…</span>
+            <span className="text-xs">This usually takes 10–30 seconds</span>
+          </div>
+        </div>
+      );
+    }
+
+    if (websiteContentPhase === "failed") {
+      return (
+        <div className="flex items-center justify-center min-h-[600px] bg-muted/30">
+          <div className="flex flex-col items-center gap-3 max-w-md text-center px-4">
+            <p className="text-sm font-medium">Couldn&apos;t capture screenshot</p>
+            <p className="text-xs text-muted-foreground">
+              {websiteCaptureError || "Something went wrong"}
+            </p>
+            <Button
+              size="sm"
+              type="button"
+              onClick={() => onWebsiteCaptureRetry?.()}
+            >
+              Retry capture
+            </Button>
+          </div>
+        </div>
+      );
+    }
+
     const viewMode = websiteViewMode ?? "live";
 
     if (viewMode === "live") {

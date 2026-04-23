@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ShareLink, ReviewItem, Project, ReviewRevision } from "@prisma/client";
 import { CommentStatus } from "@prisma/client";
-import { GuestIdentityGate } from "./guest-identity-gate";
+import { GuestIdentityGate, type GuestIdentityPayload } from "./guest-identity-gate";
 import { ReviewViewer } from "@/components/viewers/review-viewer";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -92,7 +92,9 @@ export function GuestReviewPage({
   project,
   allowGuestComments,
 }: GuestReviewPageProps) {
-  const [guestIdentity, setGuestIdentity] = useState<{ id: string; name: string; email?: string } | null>(null);
+  const [guestIdentity, setGuestIdentity] = useState<GuestIdentityPayload | null>(
+    null
+  );
 
   // If guest commenting is enabled but no identity yet, show the gate
   if (allowGuestComments && !guestIdentity) {
@@ -153,6 +155,14 @@ export function GuestReviewPage({
               role: "GUEST",
             }}
             userRole={null}
+            captureGuestAuth={
+              guestIdentity
+                ? {
+                    guestToken: guestIdentity.accessToken,
+                    shareToken: shareLink.token,
+                  }
+                : undefined
+            }
           />
         </div>
       </div>
