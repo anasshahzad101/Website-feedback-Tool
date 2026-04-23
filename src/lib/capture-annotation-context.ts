@@ -52,16 +52,25 @@ function resolveViewportTarget(
   const rootST = se.scrollTop;
   const winX = Math.round(win.scrollX || 0);
   const winY = Math.round(win.scrollY || 0);
-  // Some documents keep scroll on window while scrollingElement reads 0 (or vice versa).
-  const rootScrolls =
-    rootST > 0 || rootSL > 0 || winY > 0 || winX > 0;
+
+  let outerScrollOffset = 0;
+  try {
+    const rect = iframe.getBoundingClientRect();
+    if (rect.top < 0) outerScrollOffset = Math.round(-rect.top);
+  } catch {
+    /* ignore */
+  }
+
+  const effectiveScrollLeft = Math.max(rootSL, winX);
+  const effectiveScrollTop = Math.max(rootST, winY) + outerScrollOffset;
+  const rootScrolls = effectiveScrollTop > 0 || effectiveScrollLeft > 0;
 
   if (rootScrolls) {
     return {
       kind: "root",
       el: se,
-      scrollLeft: Math.max(rootSL, winX),
-      scrollTop: Math.max(rootST, winY),
+      scrollLeft: effectiveScrollLeft,
+      scrollTop: effectiveScrollTop,
       viewW,
       viewH,
     };
