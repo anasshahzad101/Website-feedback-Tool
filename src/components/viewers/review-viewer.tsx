@@ -807,7 +807,7 @@ export function ReviewViewer({
         uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
       }
 
-      // Pin snapshot: sent with comment POST; server writes file after the DB transaction (or uses pre-uploaded path from /api/pin-screenshot).
+      // Pin snapshot: pre-uploaded path from /api/pin-crop (static website) or /api/pin-screenshot (live iframe), or base64 from client crop.
       let pinScreenshotContextPath: string | undefined;
       let pinContextImageBase64: string | undefined;
       let pinInCropX: number | undefined;
@@ -874,6 +874,45 @@ export function ReviewViewer({
               }
             } catch {
               /* comment still posts without a pin snapshot */
+            }
+          } else if (websiteHasStaticReadyImage && displayRevision?.id) {
+            try {
+              const payload: Record<string, string | number> = {
+                reviewRevisionId: displayRevision.id,
+                reviewItemId: reviewItem.id,
+                pinXPercent: annotationForContext.xPercent,
+                pinYPercent: annotationForContext.yPercent,
+                desiredCropWidth: 1280,
+                desiredCropHeight: 900,
+              };
+              if (captureGuestAuth) {
+                payload.guestToken = captureGuestAuth.guestToken;
+                payload.shareToken = captureGuestAuth.shareToken;
+              }
+              const res = await withTimeout(
+                fetch("/api/pin-crop", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "same-origin",
+                  body: JSON.stringify(payload),
+                }).then(async (r) => {
+                  if (!r.ok) return null;
+                  return (await r.json()) as {
+                    screenshotContextPath: string;
+                    pinInCropX: number;
+                    pinInCropY: number;
+                  };
+                }),
+                30000
+              );
+              if (res?.screenshotContextPath) {
+                pinContextImageBase64 = undefined;
+                pinInCropX = res.pinInCropX;
+                pinInCropY = res.pinInCropY;
+                pinScreenshotContextPath = res.screenshotContextPath;
+              }
+            } catch (err) {
+              console.error("[review-viewer] pin-crop failed:", err);
             }
           } else {
             const img = contentRef.current?.querySelector(
@@ -1016,6 +1055,7 @@ export function ReviewViewer({
     effectiveFilePath,
     websiteViewMode,
     websiteHasStaticReadyImage,
+    captureGuestAuth,
     annotations,
     getLiveWebsiteIframe,
   ]);
