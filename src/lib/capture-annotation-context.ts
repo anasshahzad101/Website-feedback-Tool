@@ -177,6 +177,25 @@ function computeParentOuterScrollOffset(iframe: HTMLIFrameElement): number {
   }
 }
 
+/** Snap scroll without `scroll-behavior: smooth` so capture sees the final position immediately. */
+function scrollToInstant(
+  winOrEl: Window | HTMLElement,
+  left: number,
+  top: number
+): void {
+  try {
+    winOrEl.scrollTo({ left, top, behavior: "instant" });
+  } catch {
+    if (winOrEl instanceof Window) {
+      winOrEl.scrollTo(left, top);
+    } else {
+      const e = winOrEl as HTMLElement;
+      e.scrollLeft = left;
+      e.scrollTop = top;
+    }
+  }
+}
+
 export type CaptureIframeViewportOptions = {
   /** Avoid very heavy html2canvas fallback on large/complex pages. */
   allowHeavyFallback?: boolean;
@@ -422,6 +441,8 @@ export async function captureIframeViewport(
         : computeParentOuterScrollOffset(iframe);
 
     let dataUrl: string | null = null;
+    const prevScrollBehavior = html.style.scrollBehavior;
+    html.style.scrollBehavior = "auto";
     try {
       const iframeRectOuter = computeIframeRectOuterScroll(iframe);
       const innerOnlyY =
@@ -429,17 +450,45 @@ export async function captureIframeViewport(
           ? Math.max(0, vt.scrollTop - iframeRectOuter)
           : 0;
 
-      el.scrollLeft = vt.scrollLeft;
       if (vt.kind === "root") {
-        el.scrollTop = outerOffset + innerOnlyY;
-        win.scrollTo(0, el.scrollTop);
+        const top = outerOffset + innerOnlyY;
+        try {
+          win.scrollTo({
+            top,
+            left: vt.scrollLeft,
+            behavior: "instant",
+          });
+        } catch {
+          el.scrollLeft = vt.scrollLeft;
+          el.scrollTop = top;
+        }
         if (el !== html) {
-          html.scrollTop = outerOffset;
+          try {
+            html.scrollTo({
+              top: outerOffset,
+              left: html.scrollLeft,
+              behavior: "instant",
+            });
+          } catch {
+            html.scrollTop = outerOffset;
+          }
         }
       } else {
-        html.scrollTop = outerOffset;
-        win.scrollTo(0, outerOffset);
-        el.scrollTop = vt.scrollTop;
+        try {
+          win.scrollTo({ top: outerOffset, left: 0, behavior: "instant" });
+        } catch {
+          win.scrollTo(0, outerOffset);
+        }
+        try {
+          el.scrollTo({
+            top: vt.scrollTop,
+            left: vt.scrollLeft,
+            behavior: "instant",
+          });
+        } catch {
+          el.scrollLeft = vt.scrollLeft;
+          el.scrollTop = vt.scrollTop;
+        }
       }
 
       await new Promise<void>((resolve) =>
@@ -482,11 +531,12 @@ export async function captureIframeViewport(
         }
       }
     } finally {
-      el.scrollLeft = prevSL;
-      el.scrollTop = prevST;
-      html.scrollLeft = prevHtmlSL;
-      html.scrollTop = prevHtmlST;
-      win.scrollTo(prevWinX, prevWinY);
+      scrollToInstant(el, prevSL, prevST);
+      if (html !== el) {
+        scrollToInstant(html, prevHtmlSL, prevHtmlST);
+      }
+      scrollToInstant(win, prevWinX, prevWinY);
+      html.style.scrollBehavior = prevScrollBehavior;
     }
 
     if (!dataUrl) return null;
