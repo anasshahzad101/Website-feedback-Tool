@@ -133,7 +133,49 @@ function resolveViewportTarget(
 export type ViewportPinFocus = { x: number; y: number };
 
 /** Snapshot from `freezeIframeViewport` — pass into `captureIframeViewport` so async capture matches submit-time scroll. */
-export type FrozenIframeViewport = ViewportTarget;
+export type FrozenIframeViewport = ViewportTarget & { outerOffset: number };
+
+function findOuterScrollContainer(iframe: HTMLIFrameElement): HTMLElement | null {
+  const parentDoc = iframe.ownerDocument;
+  const parentWin = parentDoc.defaultView;
+  if (!parentWin) return null;
+  let node: HTMLElement | null = iframe.parentElement;
+  while (node && node !== parentDoc.documentElement) {
+    const style = parentWin.getComputedStyle(node);
+    const oy = style.overflowY;
+    if (
+      (oy === "auto" || oy === "scroll" || oy === "overlay") &&
+      node.scrollHeight > node.clientHeight + 1
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+/** Matches the iframe-rect contribution inside `resolveViewportTarget` so we can combine with parent `outerOffset`. */
+function computeIframeRectOuterScroll(iframe: HTMLIFrameElement): number {
+  try {
+    const rect = iframe.getBoundingClientRect();
+    if (rect.top < 0) return Math.round(-rect.top);
+  } catch {
+    /* ignore */
+  }
+  return 0;
+}
+
+function computeParentOuterScrollOffset(iframe: HTMLIFrameElement): number {
+  const outerContainer = findOuterScrollContainer(iframe);
+  if (!outerContainer) return 0;
+  try {
+    const iframeRect = iframe.getBoundingClientRect();
+    const containerRect = outerContainer.getBoundingClientRect();
+    return Math.max(0, Math.round(containerRect.top - iframeRect.top));
+  } catch {
+    return 0;
+  }
+}
 
 export type CaptureIframeViewportOptions = {
   /** Avoid very heavy html2canvas fallback on large/complex pages. */
@@ -155,7 +197,9 @@ export function freezeIframeViewport(
   const win = iframe.contentWindow;
   if (!doc?.body || !win) return null;
   try {
-    return resolveViewportTarget(doc, win, iframe);
+    const vt = resolveViewportTarget(doc, win, iframe);
+    const outerOffset = computeParentOuterScrollOffset(iframe);
+    return { ...vt, outerOffset };
   } catch {
     return null;
   }
@@ -172,7 +216,8 @@ function viewportForCapture(
     frozen.el.isConnected &&
     frozen.el.ownerDocument === doc
   ) {
-    return frozen;
+    const { outerOffset: _outer, ...vt } = frozen;
+    return vt;
   }
   return resolveViewportTarget(doc, win, iframe);
 }
@@ -368,19 +413,34 @@ export async function captureIframeViewport(
     const prevWinX = win.scrollX;
     const prevWinY = win.scrollY;
 
+    const frozen = options?.frozen ?? null;
+    const outerOffset =
+      frozen?.el &&
+      frozen.el.isConnected &&
+      frozen.el.ownerDocument === doc
+        ? frozen.outerOffset
+        : computeParentOuterScrollOffset(iframe);
+
     let dataUrl: string | null = null;
     try {
-      const rect = iframe.getBoundingClientRect();
-      const outerOffset =
-        rect.top < 0 ? Math.round(-rect.top) : 0;
-
-      // Outer page scroll clips the iframe from above; the inner document often stays at scroll 0.
-      // Move the iframe document/window so the visible region matches what the user sees, then capture.
-      doc.documentElement.scrollTo(0, outerOffset);
-      win.scrollTo(0, outerOffset);
+      const iframeRectOuter = computeIframeRectOuterScroll(iframe);
+      const innerOnlyY =
+        vt.kind === "root"
+          ? Math.max(0, vt.scrollTop - iframeRectOuter)
+          : 0;
 
       el.scrollLeft = vt.scrollLeft;
-      el.scrollTop = vt.scrollTop;
+      if (vt.kind === "root") {
+        el.scrollTop = outerOffset + innerOnlyY;
+        win.scrollTo(0, el.scrollTop);
+        if (el !== html) {
+          html.scrollTop = outerOffset;
+        }
+      } else {
+        html.scrollTop = outerOffset;
+        win.scrollTo(0, outerOffset);
+        el.scrollTop = vt.scrollTop;
+      }
 
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
