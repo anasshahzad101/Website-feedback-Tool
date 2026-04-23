@@ -137,10 +137,17 @@ export async function POST(request: NextRequest) {
       rootAnnotationId,
       initialMessage,
       attachments,
-      pinContextImageBase64,
+      pinContextImageBase64: pinContextImageBase64Raw,
+      pinScreenshotContextPath: pinScreenshotContextPathRaw,
       pinInCropX,
       pinInCropY,
     } = validated.data;
+
+    const pinScreenshotContextPath = pinScreenshotContextPathRaw?.trim() ?? "";
+    let pinContextImageBase64 = pinContextImageBase64Raw;
+    if (pinScreenshotContextPath) {
+      pinContextImageBase64 = undefined;
+    }
 
     // Check access
     const reviewItem = await db.reviewItem.findUnique({
@@ -224,7 +231,55 @@ export async function POST(request: NextRequest) {
     let savedScreenshotContextPath: string | null = null;
     let savedPinInCropX: number | null = null;
     let savedPinInCropY: number | null = null;
-    if (
+
+    const attachScreenshotToAnnotation = async (relativePath: string) => {
+      const hasCropCoords =
+        typeof pinInCropX === "number" &&
+        typeof pinInCropY === "number" &&
+        Number.isFinite(pinInCropX) &&
+        Number.isFinite(pinInCropY);
+      try {
+        await db.annotation.update({
+          where: { id: rootAnnotationId! },
+          data: {
+            screenshotContextPath: relativePath,
+            ...(hasCropCoords ? { pinInCropX, pinInCropY } : {}),
+          },
+          select: { id: true },
+        });
+        if (hasCropCoords) {
+          savedPinInCropX = pinInCropX;
+          savedPinInCropY = pinInCropY;
+        }
+      } catch (e) {
+        if (hasCropCoords && isMissingAnnotationPinColumnsError(e)) {
+          try {
+            await db.annotation.update({
+              where: { id: rootAnnotationId! },
+              data: { screenshotContextPath: relativePath },
+              select: { id: true },
+            });
+          } catch (e2) {
+            console.error(
+              "comments POST: failed to attach screenshot (fallback)",
+              rootAnnotationId,
+              e2
+            );
+          }
+        } else {
+          console.error(
+            "comments POST: failed to attach screenshotContextPath to annotation",
+            rootAnnotationId,
+            e
+          );
+        }
+      }
+    };
+
+    if (rootAnnotationId && pinScreenshotContextPath) {
+      savedScreenshotContextPath = pinScreenshotContextPath;
+      await attachScreenshotToAnnotation(pinScreenshotContextPath);
+    } else if (
       rootAnnotationId &&
       typeof pinContextImageBase64 === "string" &&
       pinContextImageBase64.trim().length > 0
@@ -232,49 +287,7 @@ export async function POST(request: NextRequest) {
       const saved = await saveContextPngFromBase64(pinContextImageBase64);
       if (saved.ok) {
         savedScreenshotContextPath = saved.relativePath;
-        const hasCropCoords =
-          typeof pinInCropX === "number" &&
-          typeof pinInCropY === "number" &&
-          Number.isFinite(pinInCropX) &&
-          Number.isFinite(pinInCropY);
-        try {
-          await db.annotation.update({
-            where: { id: rootAnnotationId },
-            data: {
-              screenshotContextPath: saved.relativePath,
-              ...(hasCropCoords
-                ? { pinInCropX, pinInCropY }
-                : {}),
-            },
-            select: { id: true },
-          });
-          if (hasCropCoords) {
-            savedPinInCropX = pinInCropX;
-            savedPinInCropY = pinInCropY;
-          }
-        } catch (e) {
-          if (hasCropCoords && isMissingAnnotationPinColumnsError(e)) {
-            try {
-              await db.annotation.update({
-                where: { id: rootAnnotationId },
-                data: { screenshotContextPath: saved.relativePath },
-                select: { id: true },
-              });
-            } catch (e2) {
-              console.error(
-                "comments POST: failed to attach screenshot (fallback)",
-                rootAnnotationId,
-                e2
-              );
-            }
-          } else {
-            console.error(
-              "comments POST: failed to attach screenshotContextPath to annotation",
-              rootAnnotationId,
-              e
-            );
-          }
-        }
+        await attachScreenshotToAnnotation(saved.relativePath);
       } else {
         console.error(
           "comments POST: saveContextPngFromBase64 failed:",

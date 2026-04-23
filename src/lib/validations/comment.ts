@@ -17,6 +17,11 @@ export const commentThreadSchema = z
     attachments: z.array(commentAttachmentSchema).max(8).optional(),
     /** PNG data URL or base64 — saved on the root annotation with the thread (same auth as comment). */
     pinContextImageBase64: z.string().max(12_000_000).optional(),
+    /** Already-saved path from POST /api/pin-screenshot (mutually exclusive with pinContextImageBase64). */
+    pinScreenshotContextPath: z
+      .string()
+      .regex(/^\/screenshots\/context-[a-zA-Z0-9._-]+\.png$/i)
+      .optional(),
     /** 0–1: pin position within the cropped context image (stored on annotation with screenshot). */
     pinInCropX: z.number().min(0).max(1).optional(),
     pinInCropY: z.number().min(0).max(1).optional(),
@@ -29,6 +34,15 @@ export const commentThreadSchema = z
         code: z.ZodIssueCode.custom,
         message: "Add text or at least one attachment",
         path: ["initialMessage"],
+      });
+    }
+    const hasPath = !!(data.pinScreenshotContextPath?.trim());
+    const hasB64 = !!(data.pinContextImageBase64?.trim());
+    if (hasPath && hasB64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Use only one of pinScreenshotContextPath or pinContextImageBase64",
+        path: ["pinContextImageBase64"],
       });
     }
   });

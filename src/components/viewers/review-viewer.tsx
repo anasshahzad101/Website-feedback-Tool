@@ -47,11 +47,8 @@ import {
   ChevronRight,
 } from "lucide-react";
 import {
-  captureIframeViewport,
   captureImageAroundPin,
-  freezeIframeViewport,
   whenImageDrawable,
-  type PinContextImageResult,
 } from "@/lib/capture-annotation-context";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -281,11 +278,6 @@ export function ReviewViewer({
   const contentRef = useRef<HTMLDivElement>(null);
   /** Direct ref to the proxied live preview iframe (querySelector can miss after async work). */
   const websiteLiveIframeRef = useRef<HTMLIFrameElement | null>(null);
-  /** Live website: viewport capture started when the pin is placed; await on submit. */
-  const liveContextInFlightRef = useRef<{
-    pinClientId: string;
-    promise: Promise<PinContextImageResult | null>;
-  } | null>(null);
 
   const getLiveWebsiteIframe = useCallback((): HTMLIFrameElement | null => {
     return (
@@ -526,59 +518,13 @@ export function ReviewViewer({
     [reviewItem.id, user.role]
   );
 
-  const handleAnnotationCreated = useCallback(
-    (annotation: NewAnnotation) => {
-      // Show pin only in UI; it is saved when the user submits a comment. Replacing any previous pending pin.
-      setPendingAnnotation(annotation);
-      setPendingAnnotationId(annotation.id);
-      setNewComment("");
-      setSelectedAnnotationId(annotation.id);
-
-      // Capture iframe context as soon as the pin is dropped — same scroll/viewport as the click.
-      // Waiting until after comment submit often loses scroll or fails silently; we await this on submit.
-      liveContextInFlightRef.current = null;
-      if (
-        reviewItem.type === "WEBSITE" &&
-        websiteViewMode === "live" &&
-        effectiveSourceUrl
-      ) {
-        const pinId = annotation.id;
-        const pinFocus = { x: annotation.x, y: annotation.y };
-        const promise = new Promise<PinContextImageResult | null>((resolve) => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(async () => {
-              try {
-                const iframe = getLiveWebsiteIframe();
-                if (!iframe?.contentDocument?.body) {
-                  resolve(null);
-                  return;
-                }
-                const frozen = freezeIframeViewport(iframe);
-                let result = await captureIframeViewport(iframe, pinFocus, {
-                  allowHeavyFallback: true,
-                  preferAccuracy: true,
-                  frozen,
-                });
-                if (!result) {
-                  await new Promise((r) => setTimeout(r, 500));
-                  result = await captureIframeViewport(iframe, pinFocus, {
-                    allowHeavyFallback: true,
-                    preferAccuracy: true,
-                    frozen: freezeIframeViewport(iframe),
-                  });
-                }
-                resolve(result);
-              } catch {
-                resolve(null);
-              }
-            });
-          });
-        });
-        liveContextInFlightRef.current = { pinClientId: pinId, promise };
-      }
-    },
-    [reviewItem.type, websiteViewMode, effectiveSourceUrl, getLiveWebsiteIframe]
-  );
+  const handleAnnotationCreated = useCallback((annotation: NewAnnotation) => {
+    // Show pin only in UI; it is saved when the user submits a comment. Replacing any previous pending pin.
+    setPendingAnnotation(annotation);
+    setPendingAnnotationId(annotation.id);
+    setNewComment("");
+    setSelectedAnnotationId(annotation.id);
+  }, []);
 
   const handleAnnotationSelected = useCallback(
     (annotationId: string | null) => {
@@ -586,7 +532,6 @@ export function ReviewViewer({
       if (annotationId && annotationId !== pendingAnnotationId) {
         setPendingAnnotation(null);
         setPendingAnnotationId(null);
-        liveContextInFlightRef.current = null;
       }
     },
     [pendingAnnotationId]
@@ -595,21 +540,6 @@ export function ReviewViewer({
   const handleSubmitComment = useCallback(async () => {
     if (!newComment.trim() && composeStaged.length === 0) return;
     if (!pendingAnnotation && !pendingAnnotationId) return;
-
-    // Freeze iframe scroll/viewport before any await — async capture runs after
-    // submit and would otherwise read a reset (e.g. top-of-page) scroll.
-    let frozenWebsiteViewport: ReturnType<typeof freezeIframeViewport> = null;
-    if (
-      pendingAnnotation &&
-      reviewItem.type === "WEBSITE" &&
-      websiteViewMode === "live" &&
-      effectiveSourceUrl
-    ) {
-      const iframe = getLiveWebsiteIframe();
-      if (iframe) {
-        frozenWebsiteViewport = freezeIframeViewport(iframe);
-      }
-    }
 
     setSubmittingComment(true);
     if (pendingAnnotation) setSavingAnnotation(true);
@@ -649,7 +579,8 @@ export function ReviewViewer({
         uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
       }
 
-      // Pin snapshot: sent with comment POST; server writes file after the DB transaction.
+      // Pin snapshot: sent with comment POST; server writes file after the DB transaction (or uses pre-uploaded path from /api/pin-screenshot).
+      let pinScreenshotContextPath: string | undefined;
       let pinContextImageBase64: string | undefined;
       let pinInCropX: number | undefined;
       let pinInCropY: number | undefined;
@@ -663,53 +594,56 @@ export function ReviewViewer({
         if (reviewItem.type === "WEBSITE" && effectiveSourceUrl) {
           if (websiteViewMode === "live") {
             const iframe = getLiveWebsiteIframe();
-            let liveCapture: PinContextImageResult | null = null;
-            const inFlight = liveContextInFlightRef.current;
-            // Await any in-flight capture for this session — only one pending pin at a time;
-            // strict pinClientId match skipped snapshots when ids ever diverged.
-            if (inFlight) {
-              liveCapture = await withTimeout(inFlight.promise, 35000);
-            }
-            liveContextInFlightRef.current = null;
-            if (!liveCapture && iframe) {
-              liveCapture = await withTimeout(
-                captureIframeViewport(
-                  iframe,
-                  {
-                    x: annotationForContext.x,
-                    y: annotationForContext.y,
-                  },
-                  {
-                    allowHeavyFallback: true,
-                    preferAccuracy: true,
-                    frozen: frozenWebsiteViewport,
-                  }
-                ),
-                25000
+            let iframeScrollY = 0;
+            let iframeViewportW = 1280;
+            let iframeViewportH = 900;
+            if (iframe?.contentWindow && iframe.contentDocument) {
+              const win = iframe.contentWindow;
+              const doc = iframe.contentDocument;
+              iframeScrollY = Math.round(
+                doc.documentElement?.scrollTop || win.scrollY || 0
+              );
+              iframeViewportW = Math.round(
+                win.innerWidth || iframe.clientWidth || 1280
+              );
+              iframeViewportH = Math.round(
+                win.innerHeight || iframe.clientHeight || 900
               );
             }
-            if (!liveCapture && iframe) {
-              await new Promise((r) => setTimeout(r, 300));
-              liveCapture = await withTimeout(
-                captureIframeViewport(
-                  iframe,
-                  {
-                    x: annotationForContext.x,
-                    y: annotationForContext.y,
-                  },
-                  {
-                    allowHeavyFallback: true,
-                    preferAccuracy: true,
-                    frozen: freezeIframeViewport(iframe),
-                  }
-                ),
-                15000
+            try {
+              const res = await withTimeout(
+                fetch("/api/pin-screenshot", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  credentials: "same-origin",
+                  body: JSON.stringify({
+                    url: effectiveSourceUrl,
+                    viewportWidth: iframeViewportW,
+                    viewportHeight: iframeViewportH,
+                    scrollY: iframeScrollY,
+                    pinXPercent: annotationForContext.xPercent,
+                    pinYPercent: annotationForContext.yPercent,
+                    reviewItemId: reviewItem.id,
+                    reviewRevisionId: displayRevision?.id,
+                  }),
+                }).then(async (r) => {
+                  if (!r.ok) return null;
+                  return (await r.json()) as {
+                    screenshotContextPath: string;
+                    pinInCropX: number;
+                    pinInCropY: number;
+                  };
+                }),
+                50000
               );
-            }
-            if (liveCapture) {
-              pinContextImageBase64 = liveCapture.dataUrl;
-              pinInCropX = liveCapture.pinInCropX;
-              pinInCropY = liveCapture.pinInCropY;
+              if (res?.screenshotContextPath) {
+                pinContextImageBase64 = undefined;
+                pinInCropX = res.pinInCropX;
+                pinInCropY = res.pinInCropY;
+                pinScreenshotContextPath = res.screenshotContextPath;
+              }
+            } catch {
+              /* comment still posts without a pin snapshot */
             }
           } else {
             const img = contentRef.current?.querySelector(
@@ -745,8 +679,6 @@ export function ReviewViewer({
             }
           }
         }
-      } else {
-        liveContextInFlightRef.current = null;
       }
 
       const res = await fetch("/api/comments", {
@@ -759,14 +691,21 @@ export function ReviewViewer({
           rootAnnotationId: annotationId,
           initialMessage: newComment.trim(),
           ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
-          ...(pinContextImageBase64
+          ...(pinScreenshotContextPath
             ? {
-                pinContextImageBase64,
+                pinScreenshotContextPath,
                 ...(pinInCropX != null && pinInCropY != null
                   ? { pinInCropX, pinInCropY }
                   : {}),
               }
-            : {}),
+            : pinContextImageBase64
+              ? {
+                  pinContextImageBase64,
+                  ...(pinInCropX != null && pinInCropY != null
+                    ? { pinInCropX, pinInCropY }
+                    : {}),
+                }
+              : {}),
         }),
       });
 
@@ -855,7 +794,6 @@ export function ReviewViewer({
     // Pin was not saved yet; just remove it from UI. No API call.
     setPendingAnnotation(null);
     setPendingAnnotationId(null);
-    liveContextInFlightRef.current = null;
     setSelectedAnnotationId(null);
     setNewComment("");
     clearComposeStaged();
