@@ -185,7 +185,7 @@ export async function POST(request: NextRequest) {
       block_cookie_banners: "true",
       block_trackers: "true",
       cache: "true",
-      cache_ttl: "3600",
+      cache_ttl: "14400",
       clip_x: "0",
       clip_y: String(scrollY),
       clip_width: String(viewportWidth),
