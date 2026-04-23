@@ -201,6 +201,97 @@ function proxyAssetUrl(appOrigin: string, absoluteUrl: string): string {
   return `${appOrigin}/api/proxy?url=${encodeURIComponent(absoluteUrl)}`;
 }
 
+const LINK_SUBRESOURCE_REL =
+  /\brel\s*=\s*["'][^"']*\b(?:stylesheet|preload|modulepreload)\b/i;
+
+function shouldProxyAbsoluteSubresourceUrl(
+  raw: string,
+  siteUrl: URL,
+  appOrigin: string
+): string | null {
+  const t = raw.trim();
+  if (!t || t.startsWith("data:") || t.startsWith("#")) return null;
+  let appHost: string;
+  try {
+    appHost = new URL(appOrigin).host;
+  } catch {
+    appHost = "";
+  }
+  try {
+    const u = new URL(t, siteUrl);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (appHost && u.host === appHost) return null;
+    const abs = u.toString();
+    if (abs.includes(`${appOrigin}/api/proxy`)) return null;
+    return proxyAssetUrl(appOrigin, abs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rewrite <link rel="stylesheet|preload|modulepreload" href="..."> so styles load same-origin
+ * for capture (modern-screenshot / html2canvas cssRules). Invoked once per URL phase.
+ */
+function rewriteLinkTagHrefsPhase(
+  html: string,
+  phase: "root-relative" | "path-relative" | "absolute",
+  documentUrl: URL,
+  appOrigin: string,
+  siteUrl: URL
+): string {
+  return html.replace(/<link\b[^>]*>/gi, (tag) => {
+    if (!LINK_SUBRESOURCE_REL.test(tag)) return tag;
+    const hm = tag.match(/\bhref\s*=\s*(["'])([^"']+)\1/i);
+    if (!hm) return tag;
+    const q = hm[1];
+    const val = hm[2];
+    const trimmed = val.trim();
+    let next: string | null = null;
+
+    if (phase === "root-relative") {
+      if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
+        try {
+          next = proxyAssetUrl(appOrigin, `${documentUrl.origin}${trimmed}`);
+        } catch {
+          next = null;
+        }
+      }
+    } else if (phase === "path-relative") {
+      if (
+        trimmed &&
+        !/^(https?:|\/\/|data:|#|\/)/i.test(trimmed) &&
+        /^(w=\d+\/|cdn-cgi\/)/i.test(trimmed)
+      ) {
+        try {
+          next = proxyAssetUrl(
+            appOrigin,
+            new URL(trimmed, documentUrl).toString()
+          );
+        } catch {
+          next = null;
+        }
+      }
+    } else {
+      next = shouldProxyAbsoluteSubresourceUrl(trimmed, siteUrl, appOrigin);
+    }
+
+    if (next == null || next === val) return tag;
+    let out = tag.replace(hm[0], `href=${q}${next}${q}`);
+    if (
+      /\brel\s*=\s*["'][^"']*stylesheet/i.test(out) &&
+      !/\bcrossorigin\s*=/i.test(out)
+    ) {
+      if (out.endsWith("/>")) {
+        out = `${out.slice(0, -2)} crossorigin="anonymous" />`;
+      } else if (out.endsWith(">")) {
+        out = `${out.slice(0, -1)} crossorigin="anonymous">`;
+      }
+    }
+    return out;
+  });
+}
+
 /**
  * Inline script inserted at the start of proxied HTML: many SPAs resolve `/api/...`, XHR, and script
  * URLs against the iframe document (our app origin), ignoring `<base>`. Rewrites those at runtime.
@@ -285,6 +376,14 @@ function rewriteSubresourceRootRelativeUrls(
     return `${prefix}${rewritten}${suffix}`;
   });
 
+  html = rewriteLinkTagHrefsPhase(
+    html,
+    "root-relative",
+    baseUrl,
+    appOrigin,
+    baseUrl
+  );
+
   return html;
 }
 
@@ -335,6 +434,14 @@ function rewritePathRelativeCdnPatterns(
       .join(", ");
     return `${prefix}${rewritten}${suffix}`;
   });
+
+  html = rewriteLinkTagHrefsPhase(
+    html,
+    "path-relative",
+    documentUrl,
+    appOrigin,
+    documentUrl
+  );
 
   return html;
 }
@@ -396,6 +503,14 @@ function rewriteSameSiteAbsoluteSubresourceUrlsToProxy(
     }
   );
 
+  html = rewriteLinkTagHrefsPhase(
+    html,
+    "absolute",
+    siteUrl,
+    appOrigin,
+    siteUrl
+  );
+
   return html;
 }
 
@@ -415,13 +530,14 @@ function rewriteNavigationalRootRelativeToProxy(
   siteUrl: URL,
   appOrigin: string
 ): string {
+  // Exclude <link> (stylesheets, etc.) — those are subresources, not navigation.
   return html.replace(
-    /((?:href|action|formaction)=["'])(\/(?!\/)[^"']*)(["'])/gi,
-    (match, prefix, rootRelativePath, suffix) => {
+    /<((?!link\b)[a-zA-Z][\w-]*)\b([^>]*?\s)(href|action|formaction)=(["'])(\/(?!\/)[^"']*)\4/gi,
+    (match, tag, mid, attr, q, rootRelativePath) => {
       try {
         const absUrl = `${siteUrl.origin}${rootRelativePath}`;
         const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(absUrl)}`;
-        return `${prefix}${proxied}${suffix}`;
+        return `<${tag}${mid}${attr}=${q}${proxied}${q}`;
       } catch {
         return match;
       }
@@ -443,29 +559,29 @@ function rewriteSameSiteAbsoluteNavUrlsToProxy(
       const escOrigin = escapeRegExp(origin);
       html = html.replace(
         new RegExp(
-          `\\b(href|action|formaction)=(["'])(${escOrigin})([^"']*)\\2`,
+          `<((?!link\\b)[a-zA-Z][\\w-]*)\\b([^>]*?\\s)(href|action|formaction)=(["'])(${escOrigin})([^"']*)\\4`,
           "gi"
         ),
-        (_m, attr, q, _o, pathPart: string) => {
+        (_m, tag, mid, attr, q, _o, pathPart: string) => {
           const abs = origin + pathPart;
           if (abs.includes(`${appOrigin}/api/proxy`)) {
-            return `${attr}=${q}${origin}${pathPart}${q}`;
+            return `<${tag}${mid}${attr}=${q}${origin}${pathPart}${q}`;
           }
           const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(abs)}`;
-          return `${attr}=${q}${proxied}${q}`;
+          return `<${tag}${mid}${attr}=${q}${proxied}${q}`;
         }
       );
     }
     html = html.replace(
       new RegExp(
-        `\\b(href|action|formaction)=(["'])(//${escHost})([^"']*)\\2`,
+        `<((?!link\\b)[a-zA-Z][\\w-]*)\\b([^>]*?\\s)(href|action|formaction)=(["'])(//${escHost})([^"']*)\\4`,
         "gi"
       ),
-      (_m, attr, q, _protoHost, rest: string) => {
+      (_m, tag, mid, attr, q, _protoHost, rest: string) => {
         const path = rest && !rest.startsWith("/") ? `/${rest}` : rest || "/";
         const abs = new URL(path, `${siteUrl.protocol}//${host}`).toString();
         const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(abs)}`;
-        return `${attr}=${q}${proxied}${q}`;
+        return `<${tag}${mid}${attr}=${q}${proxied}${q}`;
       }
     );
   }
