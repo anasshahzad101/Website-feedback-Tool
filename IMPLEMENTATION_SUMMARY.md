@@ -18,7 +18,7 @@ A production-ready internal web application for visual review and feedback manag
 - **Image Viewer**: Inline image rendering with annotation support
 - **PDF Viewer**: Inline PDF rendering with page navigation
 - **Video Viewer**: Inline video player with timestamp support
-- **Website Review**: Screenshot-based review (primary) + iframe preview (fallback)
+- **Website Review**: Markup.io-style **live mode** (primary) — proxied iframe with DOM-anchored pins, viewport simulator (Desktop/Tablet/Mobile), and a server-side snapshot fallback that auto-engages when the proxy can't reach the target
 
 ### Phase 3: Annotation & Comments ✅
 - **Annotation Engine**: SVG-based overlay with pixel-precise coordinates
@@ -39,6 +39,14 @@ A production-ready internal web application for visual review and feedback manag
 - Screenshot context (architecture ready)
 - Responsive polish (responsive layout in place)
 - Permissions hardening (comprehensive permission system)
+
+### Phase 6: Markup.io-style live website mode ✅
+- **Same-origin proxy**: rewrites HTML/CSS/links and runtime-patches SPA fetch / XHR so any URL is embeddable; strips X-Frame-Options & CSP `frame-ancestors`.
+- **Cross-frame bridge**: versioned `{__wft, v, type, payload}` envelope with origin + source validation; iframe → parent: `ready`, `pin-click`, `pin-positions`, `proxy-error`; parent → iframe: `set-mode`, `set-pin-anchors`, `scroll-to-selector`, `scroll-to-doc`, `query-rects`.
+- **DOM-anchored pins**: clicks capture a CSS-path selector + element-relative offset + scroll/viewport state; persisted as JSON on `Annotation.viewportMetaJson`. The iframe re-projects positions on scroll / resize / debounced mutation and broadcasts back; pins render as absolutely-positioned overlay buttons that share the iframe's coordinate space.
+- **Viewport simulator**: Desktop / Tablet (768px) / Mobile (375px); selector-based pins re-anchor automatically on resize.
+- **Comment ↔ pin sync**: clicking a sidebar thread smooth-scrolls the iframe via `scroll-to-selector` (with `scroll-to-doc` fallback); a per-id ref prevents redundant re-scrolls.
+- **Snapshot fallback**: the proxy's 502 error page postMessages `proxy-error` → the parent auto-flips to the latest ready snapshot when one exists. "Save snapshot" button on the live toolbar invokes the existing capture pipeline.
 
 ## File Statistics
 

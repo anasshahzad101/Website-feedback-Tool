@@ -36,6 +36,8 @@ export interface Annotation {
   /** 0–1: pin X/Y within the context crop image (when screenshotContextPath is a pin crop). */
   pinInCropX?: number | null;
   pinInCropY?: number | null;
+  /** JSON blob with viewport / DOM-anchor metadata (markup.io live-mode pins). */
+  viewportMetaJson?: string | null;
 }
 
 interface AnnotationLayerProps {

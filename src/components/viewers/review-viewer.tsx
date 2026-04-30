@@ -24,6 +24,15 @@ import {
   ScreenshotCaptureStatus,
 } from "@prisma/client";
 import { AnnotationLayer, type NewAnnotation, type Annotation } from "@/components/annotations/annotation-layer";
+import { LiveWebsiteViewer, type LivePinOverlayState } from "@/components/viewers/live-website-viewer";
+import {
+  parseLiveAnchorMeta,
+  postCommand,
+  type LiveIframeMode,
+  type PinAnchor,
+  type PinClickPayload,
+} from "@/lib/live-iframe-bridge";
+import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -51,6 +60,9 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
+  Monitor,
+  Tablet,
+  Smartphone,
 } from "lucide-react";
 import {
   captureImageAroundPin,
@@ -268,7 +280,9 @@ export function ReviewViewer({
   // Keep internal zoom at 1 so content always renders at natural size.
   const [zoom] = useState(1);
   // Responsive preview mode for website feedback
-  const [deviceMode, setDeviceMode] = useState<"desktop" | "mobile">("desktop");
+  const [deviceMode, setDeviceMode] = useState<"desktop" | "tablet" | "mobile">(
+    "desktop",
+  );
   const [contentDimensions, setContentDimensions] = useState({ width: 1280, height: 900 });
   const [capturing, setCapturing] = useState(false);
   const [capturedPath, setCapturedPath] = useState<string | null>(null);
@@ -296,6 +310,12 @@ export function ReviewViewer({
   const websitePollCountRef = useRef(0);
   // Pending pin (not saved until comment is submitted); cleared on cancel or when placing another pin.
   const [pendingAnnotation, setPendingAnnotation] = useState<NewAnnotation | null>(null);
+  /**
+   * For live-website annotations, the bridge gives us DOM-anchored click data
+   * (selector + element-relative offset + scroll/viewport). We stash it next
+   * to `pendingAnnotation` so the save call can persist it as `viewportMetaJson`.
+   */
+  const [pendingLiveAnchor, setPendingLiveAnchor] = useState<PinClickPayload | null>(null);
   /** Markup-style sidebar: filter + search */
   const [commentSidebarFilter, setCommentSidebarFilter] = useState<
     "all" | "open" | "resolved"
@@ -750,8 +770,58 @@ export function ReviewViewer({
     // Show pin only in UI; it is saved when the user submits a comment. Replacing any previous pending pin.
     setPendingAnnotation(annotation);
     setPendingAnnotationId(annotation.id);
+    setPendingLiveAnchor(null);
     setNewComment("");
     setSelectedAnnotationId(annotation.id);
+  }, []);
+
+  /**
+   * If the proxy returns its 502 error page, fall back to the latest ready
+   * snapshot for this revision. We auto-switch view modes only once per
+   * source-url change so the user can manually flip back to "Live" via the
+   * existing toggle.
+   */
+  const proxyFallbackTriggeredRef = useRef<string | null>(null);
+  const handleLiveProxyError = useCallback(() => {
+    if (!effectiveSourceUrl) return;
+    if (proxyFallbackTriggeredRef.current === effectiveSourceUrl) return;
+    proxyFallbackTriggeredRef.current = effectiveSourceUrl;
+    if (websiteHasStaticReadyImage) {
+      setWebsiteViewMode("screenshot");
+      toast.message("Live preview unavailable — showing the latest snapshot.");
+    } else {
+      toast.error(
+        "Live preview unavailable. Save a snapshot to capture the current state.",
+      );
+    }
+  }, [effectiveSourceUrl, websiteHasStaticReadyImage]);
+
+  /**
+   * Bridge delivered a click from the live website iframe. Translate the
+   * DOM-anchored payload into a `NewAnnotation` so the existing pending-pin /
+   * composer flow takes over, and stash the raw payload for `viewportMetaJson`.
+   */
+  const handleLivePinClick = useCallback((payload: PinClickPayload) => {
+    const id = uuidv4();
+    const clamp01 = (n: number) =>
+      Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
+    const next: NewAnnotation = {
+      id,
+      annotationType: "PIN",
+      x: Math.round(payload.docX),
+      y: Math.round(payload.docY),
+      // Schema requires xPercent/yPercent ∈ [0,1]. Element-relative offset is
+      // already in that range; the document-level position is preserved in
+      // viewportMetaJson + the absolute x/y.
+      xPercent: clamp01(payload.offsetXPct),
+      yPercent: clamp01(payload.offsetYPct),
+      color: "#3b82f6",
+    };
+    setPendingAnnotation(next);
+    setPendingAnnotationId(id);
+    setPendingLiveAnchor(payload);
+    setNewComment("");
+    setSelectedAnnotationId(id);
   }, []);
 
   const handleAnnotationSelected = useCallback(
@@ -760,6 +830,7 @@ export function ReviewViewer({
       if (annotationId && annotationId !== pendingAnnotationId) {
         setPendingAnnotation(null);
         setPendingAnnotationId(null);
+        setPendingLiveAnchor(null);
       }
     },
     [pendingAnnotationId]
@@ -778,6 +849,21 @@ export function ReviewViewer({
         : null;
       // If we have a pending (unsaved) pin, save it first, then create the comment.
       if (pendingAnnotation) {
+        const liveAnchor = pendingLiveAnchor;
+        const viewportMetaJson = liveAnchor
+          ? JSON.stringify({
+              anchor: "live-dom",
+              selector: liveAnchor.selector,
+              offsetXPct: liveAnchor.offsetXPct,
+              offsetYPct: liveAnchor.offsetYPct,
+              scrollX: liveAnchor.scrollX,
+              scrollY: liveAnchor.scrollY,
+              viewportW: liveAnchor.viewportW,
+              viewportH: liveAnchor.viewportH,
+              docX: liveAnchor.docX,
+              docY: liveAnchor.docY,
+            })
+          : undefined;
         const res = await fetch("/api/annotations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -790,6 +876,7 @@ export function ReviewViewer({
             xPercent: pendingAnnotation.xPercent,
             yPercent: pendingAnnotation.yPercent,
             color: pendingAnnotation.color,
+            ...(viewportMetaJson ? { viewportMetaJson } : {}),
           }),
         });
         if (!res.ok) {
@@ -800,6 +887,7 @@ export function ReviewViewer({
         setAnnotations((prev) => [...prev, { ...saved, commentThread: null }]);
         annotationId = saved.id;
         setPendingAnnotation(null);
+        setPendingLiveAnchor(null);
       }
 
       let uploaded: Awaited<ReturnType<typeof uploadCommentFiles>> = [];
@@ -1065,6 +1153,7 @@ export function ReviewViewer({
     // Pin was not saved yet; just remove it from UI. No API call.
     setPendingAnnotation(null);
     setPendingAnnotationId(null);
+    setPendingLiveAnchor(null);
     setSelectedAnnotationId(null);
     setNewComment("");
     clearComposeStaged();
@@ -1441,10 +1530,181 @@ export function ReviewViewer({
       ? threads.findIndex((x) => x.id === detailThread.id) + 1
       : 0;
 
+  // Live website mode uses the in-iframe bridge to capture clicks (DOM-aware),
+  // not the SVG layer. Other modes still rely on the SVG layer in annotate mode.
+  const isLiveWebsiteMode =
+    isWebsite &&
+    websiteViewMode === "live" &&
+    !websiteHasStaticReadyImage &&
+    !!effectiveSourceUrl;
+  const liveBridgeMode: LiveIframeMode | undefined = isLiveWebsiteMode
+    ? interactionMode === "annotate"
+      ? "annotate"
+      : "browse"
+    : undefined;
   // In "browse" mode on an iframe, disable the annotation layer so the site is clickable.
   // Static website screenshots behave like IMAGE: always allow annotate overlay on the raster.
   const annotationLayerActive =
-    websiteHasStaticReadyImage || interactionMode === "annotate";
+    websiteHasStaticReadyImage ||
+    (interactionMode === "annotate" && !isLiveWebsiteMode);
+
+  // ── Live-mode pin overlay ────────────────────────────────────────────────
+  // Build the anchors we want the iframe to track, plus a stable id→number map
+  // for rendering. Pins without parseable live-dom metadata are skipped (those
+  // were created in screenshot mode and don't have DOM-anchor data).
+  type LivePinDescriptor = {
+    id: string;
+    number: number;
+    color: string;
+    isPending: boolean;
+    isSelected: boolean;
+  };
+  const { livePinAnchors, livePinDescriptors } = useMemo(() => {
+    if (!isLiveWebsiteMode) {
+      return {
+        livePinAnchors: [] as PinAnchor[],
+        livePinDescriptors: [] as LivePinDescriptor[],
+      };
+    }
+    const anchors: PinAnchor[] = [];
+    const descriptors: LivePinDescriptor[] = [];
+    annotations.forEach((ann, idx) => {
+      const meta = parseLiveAnchorMeta(ann.viewportMetaJson);
+      if (!meta) return;
+      anchors.push({ id: ann.id, ...meta });
+      const status = ann.commentThread?.status;
+      const color = status
+        ? status === CommentStatus.OPEN
+          ? "#3b82f6"
+          : status === CommentStatus.IN_PROGRESS
+            ? "#f59e0b"
+            : status === CommentStatus.RESOLVED
+              ? "#22c55e"
+              : status === CommentStatus.CLOSED
+                ? "#64748b"
+                : "#94a3b8"
+        : ann.color || "#3b82f6";
+      descriptors.push({
+        id: ann.id,
+        number: idx + 1,
+        color,
+        isPending: false,
+        isSelected: selectedAnnotationId === ann.id,
+      });
+    });
+    if (pendingAnnotation && pendingLiveAnchor) {
+      anchors.push({
+        id: pendingAnnotation.id,
+        selector: pendingLiveAnchor.selector,
+        offsetXPct: pendingLiveAnchor.offsetXPct,
+        offsetYPct: pendingLiveAnchor.offsetYPct,
+        docX: pendingLiveAnchor.docX,
+        docY: pendingLiveAnchor.docY,
+      });
+      descriptors.push({
+        id: pendingAnnotation.id,
+        number: annotations.length + 1,
+        color: pendingAnnotation.color || "#3b82f6",
+        isPending: true,
+        isSelected: true,
+      });
+    }
+    return { livePinAnchors: anchors, livePinDescriptors: descriptors };
+  }, [
+    isLiveWebsiteMode,
+    annotations,
+    pendingAnnotation,
+    pendingLiveAnchor,
+    selectedAnnotationId,
+  ]);
+
+  /**
+   * In live mode, when an annotation becomes selected (via sidebar thread click
+   * or any other entry point), tell the iframe to scroll its DOM anchor into
+   * view. We skip the pending pin — the user just clicked there, the iframe
+   * doesn't need to re-center on it. We also skip re-firing for the same id.
+   */
+  const lastScrolledAnnotationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isLiveWebsiteMode) {
+      lastScrolledAnnotationIdRef.current = null;
+      return;
+    }
+    if (!selectedAnnotationId) return;
+    if (selectedAnnotationId === pendingAnnotation?.id) {
+      lastScrolledAnnotationIdRef.current = selectedAnnotationId;
+      return;
+    }
+    if (lastScrolledAnnotationIdRef.current === selectedAnnotationId) return;
+    const ann = annotations.find((a) => a.id === selectedAnnotationId);
+    if (!ann) return;
+    const meta = parseLiveAnchorMeta(ann.viewportMetaJson);
+    if (!meta) return;
+    const iframe = websiteLiveIframeRef.current;
+    if (meta.selector) {
+      postCommand(iframe, {
+        type: "scroll-to-selector",
+        payload: { selector: meta.selector, smooth: true, block: "center" },
+      });
+    } else {
+      // Fallback: target document coordinates, leaving some headroom so the
+      // pin lands a bit below the top of the viewport.
+      postCommand(iframe, {
+        type: "scroll-to-doc",
+        payload: { x: 0, y: Math.max(0, meta.docY - 200), smooth: true },
+      });
+    }
+    lastScrolledAnnotationIdRef.current = selectedAnnotationId;
+  }, [
+    isLiveWebsiteMode,
+    selectedAnnotationId,
+    pendingAnnotation,
+    annotations,
+  ]);
+
+  const renderLiveOverlay = useCallback(
+    (state: LivePinOverlayState) => {
+      if (livePinDescriptors.length === 0) return null;
+      return livePinDescriptors.map((d) => {
+        const pos = state.positions.get(d.id);
+        if (!pos) return null;
+        const size = d.isSelected ? 30 : 26;
+        return (
+          <button
+            key={d.id}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (d.isPending) return;
+              // The pin is already on screen — that's how the user clicked it.
+              // Mark it as "already scrolled to" so the scroll effect below
+              // doesn't re-center the iframe.
+              lastScrolledAnnotationIdRef.current = d.id;
+              handleAnnotationSelected(
+                d.id === selectedAnnotationId ? null : d.id,
+              );
+            }}
+            className="pointer-events-auto absolute flex items-center justify-center rounded-full border-2 border-white text-[11px] font-bold text-white shadow-md transition-all hover:scale-110"
+            style={{
+              left: pos.x - size / 2,
+              top: pos.y - size / 2,
+              width: size,
+              height: size,
+              backgroundColor: d.color,
+              cursor: d.isPending ? "default" : "pointer",
+              opacity: pos.visible ? 1 : 0.45,
+              outline: d.isSelected ? `2px solid ${d.color}` : "none",
+              outlineOffset: 2,
+            }}
+            aria-label={`Pin ${d.number}`}
+          >
+            {d.number}
+          </button>
+        );
+      });
+    },
+    [livePinDescriptors, handleAnnotationSelected, selectedAnnotationId],
+  );
 
   return (
     <>
@@ -1501,33 +1761,49 @@ export function ReviewViewer({
               </div>
             )}
 
-            {/* Device mode toggle (desktop / mobile preview) */}
+            {/* Viewport simulator: desktop / tablet / mobile breakpoints */}
             <div className="flex items-center gap-1 text-xs rounded-md border overflow-hidden">
               <button
                 type="button"
+                aria-label="Desktop viewport"
+                title="Desktop"
                 className={cn(
-                  "px-2.5 py-1.5 flex items-center gap-1 transition-colors",
+                  "px-2 py-1.5 flex items-center transition-colors",
                   deviceMode === "desktop"
                     ? "bg-primary text-primary-foreground"
                     : "bg-background text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => setDeviceMode("desktop")}
               >
-                <span className="hidden sm:inline">Desktop</span>
-                <span className="sm:hidden">D</span>
+                <Monitor className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
+                aria-label="Tablet viewport (768px)"
+                title="Tablet (768px)"
                 className={cn(
-                  "px-2.5 py-1.5 flex items-center gap-1 border-l transition-colors",
+                  "px-2 py-1.5 flex items-center border-l transition-colors",
+                  deviceMode === "tablet"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-background text-muted-foreground hover:text-foreground"
+                )}
+                onClick={() => setDeviceMode("tablet")}
+              >
+                <Tablet className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                aria-label="Mobile viewport (375px)"
+                title="Mobile (375px)"
+                className={cn(
+                  "px-2 py-1.5 flex items-center border-l transition-colors",
                   deviceMode === "mobile"
                     ? "bg-primary text-primary-foreground"
                     : "bg-background text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => setDeviceMode("mobile")}
               >
-                <span className="hidden sm:inline">Mobile</span>
-                <span className="sm:hidden">M</span>
+                <Smartphone className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
@@ -1539,10 +1815,19 @@ export function ReviewViewer({
             <div
               ref={contentRef}
               className={cn(
-                "relative w-full",
-                deviceMode === "desktop"
-                  ? "max-w-none" // desktop: let iframe be fully responsive to available width
-                  : "max-w-xs sm:max-w-sm md:max-w-md" // mobile preview: narrower width
+                "relative w-full transition-[max-width] duration-200",
+                isLiveWebsiteMode
+                  ? // Live website uses explicit pixel widths so the page itself
+                    // hits its real responsive breakpoints inside the iframe.
+                    deviceMode === "desktop"
+                    ? "max-w-none"
+                    : deviceMode === "tablet"
+                      ? "max-w-[768px]"
+                      : "max-w-[375px]"
+                  : // Static content keeps the prior responsive-class behavior.
+                    deviceMode === "desktop"
+                    ? "max-w-none"
+                    : "max-w-xs sm:max-w-sm md:max-w-md"
               )}
             >
               <ContentDisplay
@@ -1566,6 +1851,17 @@ export function ReviewViewer({
                 }
                 onRasterLayoutChange={remeasureContent}
                 liveIframeRef={websiteLiveIframeRef}
+                liveMode={liveBridgeMode}
+                onLivePinClick={
+                  isLiveWebsiteMode ? handleLivePinClick : undefined
+                }
+                livePinAnchors={isLiveWebsiteMode ? livePinAnchors : undefined}
+                renderLiveOverlay={
+                  isLiveWebsiteMode ? renderLiveOverlay : undefined
+                }
+                onLiveProxyError={
+                  isLiveWebsiteMode ? handleLiveProxyError : undefined
+                }
               />
               {annotationLayerActive && (
                 <AnnotationLayer
@@ -1579,20 +1875,22 @@ export function ReviewViewer({
                   contentHeight={contentDimensions.height}
                 />
               )}
-              {!annotationLayerActive && annotationsToShow.length > 0 && (
-                <div className="pointer-events-none absolute inset-0 z-[5]">
-                  <AnnotationLayer
-                    annotations={annotationsToShow}
-                    selectedAnnotationId={selectedAnnotationId}
-                    onAnnotationCreated={() => {}}
-                    onAnnotationSelected={handleAnnotationSelected}
-                    zoom={1}
-                    contentWidth={contentDimensions.width}
-                    contentHeight={contentDimensions.height}
-                    interactive={false}
-                  />
-                </div>
-              )}
+              {!annotationLayerActive &&
+                !isLiveWebsiteMode &&
+                annotationsToShow.length > 0 && (
+                  <div className="pointer-events-none absolute inset-0 z-[5]">
+                    <AnnotationLayer
+                      annotations={annotationsToShow}
+                      selectedAnnotationId={selectedAnnotationId}
+                      onAnnotationCreated={() => {}}
+                      onAnnotationSelected={handleAnnotationSelected}
+                      zoom={1}
+                      contentWidth={contentDimensions.width}
+                      contentHeight={contentDimensions.height}
+                      interactive={false}
+                    />
+                  </div>
+                )}
               {isWebsite && effectiveSourceUrl && (
                 <div className="pointer-events-none absolute inset-0 z-[30]">
                   <div className="pointer-events-auto absolute top-2 right-2 flex flex-wrap items-center justify-end gap-2 max-w-[calc(100%-1rem)]">
@@ -1600,12 +1898,42 @@ export function ReviewViewer({
                       <>
                         <button
                           type="button"
-                          onClick={() => setWebsiteViewMode("screenshot")}
-                          className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
+                          onClick={() => {
+                            if (!displayRevision?.id) return;
+                            void triggerWebsiteCapture(displayRevision.id);
+                            toast.message("Saving snapshot…");
+                          }}
+                          disabled={
+                            !displayRevision?.id ||
+                            websiteCaptureStatus ===
+                              ScreenshotCaptureStatus.CAPTURING
+                          }
+                          className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                          title="Capture a server-side snapshot of the current page for archival"
                         >
-                          <Camera className="w-3 h-3 shrink-0" />
-                          Screenshot mode
+                          {websiteCaptureStatus ===
+                          ScreenshotCaptureStatus.CAPTURING ? (
+                            <>
+                              <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                              Saving snapshot…
+                            </>
+                          ) : (
+                            <>
+                              <Camera className="w-3 h-3 shrink-0" />
+                              Save snapshot
+                            </>
+                          )}
                         </button>
+                        {websiteHasStaticReadyImage && (
+                          <button
+                            type="button"
+                            onClick={() => setWebsiteViewMode("screenshot")}
+                            className="text-xs bg-white/95 border rounded px-2.5 py-1 text-muted-foreground hover:text-foreground shadow-sm flex items-center gap-1"
+                            title="Show the saved snapshot instead of the live page"
+                          >
+                            View snapshot
+                          </button>
+                        )}
                         <a
                           href={
                             normalizeWebsiteUrl(effectiveSourceUrl) ??
@@ -2109,6 +2437,11 @@ function ContentDisplay({
   staticWebsiteFilePath,
   onRasterLayoutChange,
   liveIframeRef,
+  liveMode,
+  onLivePinClick,
+  livePinAnchors,
+  renderLiveOverlay,
+  onLiveProxyError,
 }: {
   type: ReviewItemType;
   sourceUrl: string | null;
@@ -2120,33 +2453,18 @@ function ContentDisplay({
   staticWebsiteFilePath?: string | null;
   onRasterLayoutChange?: () => void;
   liveIframeRef?: RefObject<HTMLIFrameElement | null>;
+  liveMode?: import("@/lib/live-iframe-bridge").LiveIframeMode;
+  onLivePinClick?: (
+    payload: import("@/lib/live-iframe-bridge").PinClickPayload,
+  ) => void;
+  livePinAnchors?: import("@/lib/live-iframe-bridge").PinAnchor[];
+  renderLiveOverlay?: (
+    state: import("@/components/viewers/live-website-viewer").LivePinOverlayState,
+  ) => React.ReactNode;
+  onLiveProxyError?: (
+    payload: import("@/lib/live-iframe-bridge").ProxyErrorPayload,
+  ) => void;
 }) {
-  const [iframeLoaded, setIframeLoaded] = useState(false);
-  // Set iframe src only after mount so the request runs in the browser (avoids SSR issues).
-  const [iframeSrc, setIframeSrc] = useState<string>("");
-
-  useEffect(() => {
-    setIframeLoaded(false);
-    setIframeSrc("");
-  }, [sourceUrl]);
-
-  // Load through /api/proxy so target X-Frame-Options / CSP frame-ancestors do not block the iframe.
-  useEffect(() => {
-    if (type !== "WEBSITE" || !sourceUrl) return;
-    const normalized = normalizeWebsiteUrl(sourceUrl);
-    if (!normalized) return;
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    if (!origin) return;
-    setIframeSrc(`${origin}/api/proxy?url=${encodeURIComponent(normalized)}`);
-  }, [type, sourceUrl]);
-
-  // If iframe onLoad never fires (e.g. slow or heavy page), stop showing loader after 10s
-  useEffect(() => {
-    if (type !== "WEBSITE" || !sourceUrl) return;
-    const t = setTimeout(() => setIframeLoaded(true), 10000);
-    return () => clearTimeout(t);
-  }, [type, sourceUrl]);
-
   // ── WEBSITE ──────────────────────────────────────────────────────────────
   if (type === "WEBSITE" && sourceUrl) {
     if (websiteContentPhase === "static" && staticWebsiteFilePath) {
@@ -2199,50 +2517,16 @@ function ContentDisplay({
 
     if (viewMode === "live") {
       return (
-        <div className="relative w-full min-h-[900px] bg-white" style={{ height: "max(900px, 100vh)" }}>
-          {/* Loading overlay — minimal, clears once iframe loads */}
-          {!iframeLoaded && iframeSrc && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 backdrop-blur-[1px]">
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Loader2 className="h-8 w-8 animate-spin" />
-                <span className="text-sm font-medium">Loading preview…</span>
-              </div>
-            </div>
-          )}
-
-          {/*
-           * iframe loads /api/proxy?url=… (same-origin) so remote X-Frame-Options / CSP do not block embed.
-           * In annotate mode the SVG layer above captures pointer events.
-           */}
-          {iframeSrc ? (
-          <iframe
-            key={iframeSrc}
-            ref={liveIframeRef}
-            src={iframeSrc}
-            className="relative z-0 w-full border-0 block min-h-[900px]"
-            title={sourceUrl}
-            style={{
-              // Always allow scrolling and interaction with the website itself.
-              // The annotation layer sits above this iframe to capture clicks for pins.
-              pointerEvents: "auto",
-              height: "max(900px, 100vh)",
-            }}
-            onLoad={() => setIframeLoaded(true)}
-            onError={() => setIframeLoaded(true)}
-          />
-          ) : (
-            <div
-              className="relative z-0 w-full border-0 block min-h-[900px] bg-muted/30 flex items-center justify-center"
-              style={{ height: "max(900px, 100vh)" }}
-            >
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Loader2 className="h-8 w-8 animate-spin" />
-                <span className="text-sm font-medium">Preparing preview…</span>
-                <span className="text-xs max-w-xs text-center truncate" title={sourceUrl}>{sourceUrl}</span>
-              </div>
-            </div>
-          )}
-        </div>
+        <LiveWebsiteViewer
+          ref={liveIframeRef}
+          sourceUrl={sourceUrl}
+          hideToolbar
+          mode={liveMode}
+          onPinClick={onLivePinClick}
+          pinAnchors={livePinAnchors}
+          renderOverlay={renderLiveOverlay}
+          onProxyError={onLiveProxyError}
+        />
       );
     }
 

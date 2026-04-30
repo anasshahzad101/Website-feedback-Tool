@@ -178,12 +178,22 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error("Proxy error for URL:", url, error);
     const message = error instanceof Error ? error.message : "Unknown error";
+    const safeUrl = escapeHtmlAttr(url);
+    const safeUrlText = escapeHtmlText(url);
+    const safeMessage = escapeHtmlText(message);
+    // Inline notifier: tell the parent (if any) that proxying failed so it can
+    // fall back to a snapshot or show an error UI. Serialize values via
+    // JSON.stringify so the embedded script is safe regardless of URL contents.
+    const notifyJs = `try{if(window.parent!==window){window.parent.postMessage({__wft:1,v:1,type:"proxy-error",payload:{status:502,url:${JSON.stringify(
+      url,
+    )},message:${JSON.stringify(message)}}},"*");}}catch(e){}`;
     return new NextResponse(
       `<html><body style="font-family:sans-serif;padding:2rem;color:#555">
         <h3>Could not load website</h3>
-        <p>The website at <strong>${url}</strong> could not be proxied.</p>
-        <p style="color:#999;font-size:0.85rem">Error: ${message}</p>
-        <p><a href="${url}" target="_blank" rel="noopener noreferrer">Open in new tab instead →</a></p>
+        <p>The website at <strong>${safeUrlText}</strong> could not be proxied.</p>
+        <p style="color:#999;font-size:0.85rem">Error: ${safeMessage}</p>
+        <p><a href="${safeUrl}" target="_blank" rel="noopener noreferrer">Open in new tab instead →</a></p>
+        <script>${notifyJs}</script>
       </body></html>`,
       {
         status: 502,
@@ -191,6 +201,17 @@ export async function GET(req: NextRequest) {
       }
     );
   }
+}
+
+function escapeHtmlText(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeHtmlAttr(s: string): string {
+  return escapeHtmlText(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function escapeRegExp(s: string): string {
@@ -338,6 +359,169 @@ function buildSameDocumentRuntimePatch(targetOrigin: string, appOrigin: string):
   if(typeof HTMLImageElement!=="undefined")patchSrcLike(HTMLImageElement,"src");
   if(typeof HTMLSourceElement!=="undefined")patchSrcLike(HTMLSourceElement,"src");
   if(navigator.sendBeacon){var sb=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){return sb(typeof u==="string"?R(u):u,d);};}
+  /* ---- Website-feedback bridge: parent <-> proxied iframe ---- */
+  var WFT_MODE="browse";
+  function wftSend(type,payload){
+    try{
+      if(window.parent===window)return;
+      window.parent.postMessage({__wft:1,v:1,type:type,payload:payload||{}},A);
+    }catch(e){}
+  }
+  function wftCssPath(node){
+    if(!node||node.nodeType!==1)return null;
+    var path=[],el=node,steps=0;
+    while(el && el.nodeType===1 && el!==document.documentElement && steps<40){
+      var tag=el.tagName?el.tagName.toLowerCase():"";
+      if(!tag)break;
+      var seg=tag;
+      if(el.id && /^[A-Za-z][\\w-]*$/.test(el.id)){
+        try{seg="#"+CSS.escape(el.id);}catch(_){seg="#"+el.id;}
+        path.unshift(seg);
+        break;
+      }
+      var dt=el.getAttribute && el.getAttribute("data-testid");
+      if(dt){
+        seg+='[data-testid="'+dt.replace(/"/g,'\\\\"')+'"]';
+      } else {
+        var p=el.parentElement;
+        if(p){
+          var same=[],i=0;
+          for(i=0;i<p.children.length;i++){if(p.children[i].tagName===el.tagName)same.push(p.children[i]);}
+          if(same.length>1){
+            var idx=same.indexOf(el)+1;
+            seg+=":nth-of-type("+idx+")";
+          }
+        }
+      }
+      path.unshift(seg);
+      el=el.parentElement;
+      steps++;
+    }
+    return path.length?path.join(" > "):null;
+  }
+  function wftOnClick(e){
+    if(WFT_MODE!=="annotate")return;
+    e.preventDefault();
+    e.stopPropagation();
+    var t=e.target instanceof Element?e.target:null;
+    if(!t)return;
+    var rect=t.getBoundingClientRect();
+    var oxp=rect.width>0?(e.clientX-rect.left)/rect.width:0;
+    var oyp=rect.height>0?(e.clientY-rect.top)/rect.height:0;
+    wftSend("pin-click",{
+      selector:wftCssPath(t),
+      offsetXPct:oxp,
+      offsetYPct:oyp,
+      viewportW:window.innerWidth,
+      viewportH:window.innerHeight,
+      scrollX:window.scrollX||window.pageXOffset||0,
+      scrollY:window.scrollY||window.pageYOffset||0,
+      docX:e.pageX,
+      docY:e.pageY
+    });
+  }
+  document.addEventListener("click",wftOnClick,true);
+  window.addEventListener("message",function(e){
+    var d=e.data;
+    if(!d||d.__wft!==1||typeof d.type!=="string")return;
+    if(e.origin!==A)return;
+    if(e.source!==window.parent)return;
+    if(d.type==="set-mode"){
+      var m=d.payload&&d.payload.mode==="annotate"?"annotate":"browse";
+      WFT_MODE=m;
+      try{document.documentElement.setAttribute("data-wft-mode",m);}catch(_){}
+    } else if(d.type==="scroll-to-doc"){
+      var p=d.payload||{};
+      try{window.scrollTo({left:p.x||0,top:p.y||0,behavior:p.smooth?"smooth":"auto"});}catch(_){window.scrollTo(p.x||0,p.y||0);}
+    } else if(d.type==="scroll-to-selector"){
+      var p2=d.payload||{};
+      try{var el=document.querySelector(p2.selector);if(el)el.scrollIntoView({behavior:p2.smooth?"smooth":"auto",block:p2.block||"center"});}catch(_){}
+    } else if(d.type==="query-rects"){
+      var p3=d.payload||{},sels=p3.selectors||[],out=[];
+      for(var i=0;i<sels.length;i++){
+        var sel=sels[i],r=null;
+        try{var n=document.querySelector(sel);if(n){var b=n.getBoundingClientRect();r={x:b.left,y:b.top,width:b.width,height:b.height};}}catch(_){}
+        out.push({selector:sel,rect:r});
+      }
+      wftSend("query-rects-result",{
+        id:p3.id||"",
+        rects:out,
+        scrollX:window.scrollX||window.pageXOffset||0,
+        scrollY:window.scrollY||window.pageYOffset||0,
+        viewportW:window.innerWidth,
+        viewportH:window.innerHeight
+      });
+    } else if(d.type==="set-pin-anchors"){
+      var p4=d.payload||{};
+      WFT_ANCHORS=Array.isArray(p4.anchors)?p4.anchors:[];
+      wftScheduleBroadcast(true);
+    }
+  });
+  /* Pin-position broadcast pipeline. Stores anchors received from the parent
+     and re-projects them to viewport-relative coords on scroll, resize, and
+     debounced DOM mutations. */
+  var WFT_ANCHORS=[];
+  var wftRafId=0,wftMutTimer=0,wftResizeTimer=0;
+  function wftBroadcastNow(){
+    wftRafId=0;
+    var sx=window.scrollX||window.pageXOffset||0,sy=window.scrollY||window.pageYOffset||0;
+    var vw=window.innerWidth,vh=window.innerHeight;
+    var positions=[];
+    for(var i=0;i<WFT_ANCHORS.length;i++){
+      var a=WFT_ANCHORS[i],x=0,y=0,anchored=false;
+      if(a && a.selector){
+        try{
+          var el=document.querySelector(a.selector);
+          if(el){
+            var r=el.getBoundingClientRect();
+            x=r.left+(a.offsetXPct||0)*r.width;
+            y=r.top+(a.offsetYPct||0)*r.height;
+            anchored=true;
+          }
+        }catch(_){}
+      }
+      if(!anchored){
+        x=(a&&typeof a.docX==="number"?a.docX:0)-sx;
+        y=(a&&typeof a.docY==="number"?a.docY:0)-sy;
+      }
+      var visible=x>=0 && x<=vw && y>=0 && y<=vh;
+      positions.push({id:a&&a.id?String(a.id):"",x:x,y:y,visible:visible,anchored:anchored});
+    }
+    wftSend("pin-positions",{
+      positions:positions,
+      scrollX:sx,scrollY:sy,viewportW:vw,viewportH:vh
+    });
+  }
+  function wftScheduleBroadcast(immediate){
+    if(immediate){
+      if(wftRafId){try{cancelAnimationFrame(wftRafId);}catch(_){}}
+      wftRafId=requestAnimationFrame(wftBroadcastNow);
+      return;
+    }
+    if(wftRafId)return;
+    wftRafId=requestAnimationFrame(wftBroadcastNow);
+  }
+  window.addEventListener("scroll",function(){wftScheduleBroadcast(false);},true);
+  window.addEventListener("resize",function(){
+    if(wftResizeTimer){clearTimeout(wftResizeTimer);}
+    wftResizeTimer=setTimeout(function(){wftResizeTimer=0;wftScheduleBroadcast(true);},50);
+  });
+  if(typeof MutationObserver!=="undefined"){
+    function wftStartObserver(){
+      try{
+        var mo=new MutationObserver(function(){
+          if(wftMutTimer){clearTimeout(wftMutTimer);}
+          wftMutTimer=setTimeout(function(){wftMutTimer=0;wftScheduleBroadcast(true);},120);
+        });
+        mo.observe(document.documentElement||document.body||document,{
+          subtree:true,childList:true,characterData:false,attributes:false
+        });
+      }catch(_){}
+    }
+    if(document.body){wftStartObserver();} else {document.addEventListener("DOMContentLoaded",wftStartObserver);}
+  }
+  function wftReady(){wftSend("ready",{href:String(location.href||"")});}
+  if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",wftReady);} else {wftReady();}
 })();`;
   return `<script>${js}</script>`;
 }

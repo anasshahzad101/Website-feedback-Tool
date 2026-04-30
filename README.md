@@ -22,9 +22,13 @@ A production-ready internal web application for visual review and feedback manag
 - **Guest**: Access via share links with permission controls
 
 ### Content Review Modes
-- **Website Review**: 
-  - Screenshot capture mode (recommended, reliable)
-  - Live iframe preview (when allowed by target site)
+- **Website Review** (markup.io-style live mode by default):
+  - Live, scrollable, interactive page rendered through a same-origin proxy that strips X-Frame-Options / CSP frame-ancestors so any URL is embeddable
+  - DOM-anchored pins: clicks capture a CSS selector + element-relative offset, so pins follow the page as it scrolls, resizes, or reflows
+  - Viewport simulator: switch between Desktop / Tablet (768px) / Mobile (375px) breakpoints; pins re-anchor automatically
+  - Browse mode for navigating the page; Annotate mode for placing pins
+  - Static screenshot mode still available as a fallback (auto-captured server-side via [ScreenshotOne](https://screenshotone.com), and used automatically when the proxy can't reach the target)
+  - "Save snapshot" button captures a server-side PNG of the current revision for archival
 - **Image Review**: Inline image viewer with annotation overlay
 - **PDF Review**: Inline PDF viewer with per-page annotations
 - **Video Review**: Inline video player with timestamp-based annotations
@@ -42,6 +46,16 @@ A production-ready internal web application for visual review and feedback manag
 - **Validation**: Zod
 - **Email**: Nodemailer
 - **File Storage**: Local filesystem (S3-compatible ready)
+
+## Live website mode (architecture)
+
+Markup.io-style commenting on a live remote page works in three layers:
+
+1. **Same-origin proxy** ([`src/app/api/proxy/route.ts`](src/app/api/proxy/route.ts)) loads the target URL server-side, strips `X-Frame-Options` and CSP `frame-ancestors`, rewrites root-relative / path-relative / cross-origin subresource URLs through the proxy, and rewrites navigational links so the iframe stays on our origin. SPA fetch / XHR / `setAttribute('src')` are runtime-patched so client-side code that resolves `/api/...` against the iframe's document URL still hits the right host.
+2. **Cross-frame bridge** ([`src/lib/live-iframe-bridge.ts`](src/lib/live-iframe-bridge.ts)) — a tiny script the proxy injects into the proxied HTML that postMessages a versioned envelope (`{__wft: 1, v: 1, type, payload}`) up to the parent. Origin and source are validated on both sides. Messages: `ready`, `pin-click`, `pin-positions`, `proxy-error` (iframe → parent); `set-mode`, `set-pin-anchors`, `scroll-to-selector`, `scroll-to-doc`, `query-rects` (parent → iframe).
+3. **Pin overlay** ([`src/components/viewers/live-website-viewer.tsx`](src/components/viewers/live-website-viewer.tsx)) — when the parent pushes pin anchors `(selector, offsetXPct, offsetYPct, docX, docY)`, the iframe re-projects screen positions on every scroll / resize / debounced mutation and broadcasts `pin-positions` back. Pins render as absolutely-positioned overlay nodes that share the iframe's coordinate space. DOM-selector lookups give graceful fallback to `(docX, docY)` when the page reflows past recognition.
+
+Each annotation's anchor data is persisted as JSON in `Annotation.viewportMetaJson` (`{ anchor: "live-dom", selector, offsetXPct, offsetYPct, scrollX, scrollY, viewportW, viewportH, docX, docY }`); see [`parseLiveAnchorMeta`](src/lib/live-iframe-bridge.ts).
 
 ## Project Structure
 

@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
       }
 
       sourceUrl = url;
-      reviewMode = mode || "SCREENSHOT_CAPTURE";
+      reviewMode = mode || "LIVE_URL";
     } else {
       // Handle file uploads
       const file = formData.get("file") as File;

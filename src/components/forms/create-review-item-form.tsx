@@ -54,7 +54,7 @@ export function CreateReviewItemForm({
     title: "",
     type: "WEBSITE" as ReviewItemType,
     sourceUrl: "",
-    reviewMode: "SCREENSHOT_CAPTURE" as ReviewMode,
+    reviewMode: "LIVE_URL" as ReviewMode,
     guestCommentingEnabled: true,
     file: null as File | null,
   });
@@ -195,12 +195,12 @@ export function CreateReviewItemForm({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="SCREENSHOT_CAPTURE">Screenshot (Recommended)</SelectItem>
-                    <SelectItem value="IFRAME_EMBED">Live Preview (may be blocked)</SelectItem>
+                    <SelectItem value="LIVE_URL">Live website (Recommended)</SelectItem>
+                    <SelectItem value="SCREENSHOT_CAPTURE">Static screenshot</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Screenshot mode is more reliable for commenting. Live preview may not work with all websites.
+                  Live mode loads the page through our proxy so you can scroll and click around while leaving feedback. Pick screenshot only when you need a frozen snapshot.
                 </p>
               </div>
             </TabsContent>
