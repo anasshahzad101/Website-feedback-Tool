@@ -9,6 +9,12 @@ const BLOCKED_RESPONSE_HEADERS = new Set([
   // Node fetch decompresses responses; we send decompressed body so browser must not see these
   "content-encoding",
   "transfer-encoding",
+  // We inject runtime patches + reveal CSS into HTML responses, so the body
+  // length no longer matches the upstream's Content-Length. Forwarding the
+  // stale length truncates the response at the original byte count and chops
+  // off everything after — including the rest of our injected <script>,
+  // turning small pages (<10KB original size) into completely empty docs.
+  "content-length",
 ]);
 
 const NO_STORE_PREVIEW_HEADERS: Record<string, string> = {
