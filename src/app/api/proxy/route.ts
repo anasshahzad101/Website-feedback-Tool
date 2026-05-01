@@ -138,6 +138,15 @@ export async function GET(req: NextRequest) {
       }
     });
 
+    // Force-allow CORS on every proxied resource. html2canvas (used for the
+    // pin context screenshot) loads images with crossorigin="anonymous" — if
+    // the response is missing Access-Control-Allow-Origin, the canvas gets
+    // tainted and toDataURL throws SecurityError. Setting it here means every
+    // proxied image / font / script comes back as a clean cross-origin
+    // resource the canvas can read.
+    responseHeaders.set("access-control-allow-origin", "*");
+    responseHeaders.set("access-control-allow-methods", "GET, HEAD, OPTIONS");
+
     // Do not set x-frame-options so the proxied page can be embedded in our iframe.
     // (We already stripped the target's x-frame-options above.)
 
