@@ -54,23 +54,48 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // Request uncompressed response to avoid encoding mismatch (we strip content-encoding anyway)
-    const forwardHeaders: Record<string, string> = {
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    const DESKTOP_UA =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    const MOBILE_UA =
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+    const buildHeaders = (ua: string): Record<string, string> => ({
+      "user-agent": ua,
+      // Request uncompressed response to avoid encoding mismatch (we strip content-encoding anyway)
       "accept-encoding": "identity",
       accept:
         req.headers.get("accept") ||
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       "accept-language": req.headers.get("accept-language") || "en-US,en;q=0.9",
-    };
-
-    let response = await fetch(url, {
-      headers: forwardHeaders,
-      redirect: "follow",
-      // 20 second timeout
-      signal: AbortSignal.timeout(20000),
+      // A search-engine referer slips past some WAFs that gate on direct hits.
+      referer: "https://www.google.com/",
     });
+
+    const fetchWithUa = (target: string, ua: string) =>
+      fetch(target, {
+        headers: buildHeaders(ua),
+        redirect: "follow",
+        signal: AbortSignal.timeout(20000),
+      });
+
+    let response = await fetchWithUa(url, DESKTOP_UA);
+
+    // Some shared-hosting WAFs (SiteGround, Imunify360, etc.) gate aggressively
+    // on the desktop Chrome UA fingerprint. iPhone Safari often slips through
+    // because mobile bots are less profitable to defend against. Retry on 403
+    // (and similar "you're a bot" status codes) before giving up.
+    const looksBlocked = (s: number) =>
+      s === 401 || s === 403 || s === 429 || s === 451 || s === 503;
+    if (looksBlocked(response.status)) {
+      try {
+        const mobileResponse = await fetchWithUa(url, MOBILE_UA);
+        if (!looksBlocked(mobileResponse.status)) {
+          response = mobileResponse;
+        }
+      } catch {
+        // Keep the original blocked response; we'll surface its body below.
+      }
+    }
 
     // If the target URL returns a 404, try falling back to the origin root once.
     // This matches the behavior where clicking "Return home" on many marketing sites
@@ -78,12 +103,14 @@ export async function GET(req: NextRequest) {
     if (response.status === 404 && targetUrl.pathname !== "/") {
       const rootUrl = `${targetUrl.origin}/`;
       try {
-        const rootResponse = await fetch(rootUrl, {
-          headers: forwardHeaders,
-          redirect: "follow",
-          signal: AbortSignal.timeout(20000),
-        });
-        // Only replace the response if the root actually works
+        let rootResponse = await fetchWithUa(rootUrl, DESKTOP_UA);
+        if (looksBlocked(rootResponse.status)) {
+          try {
+            rootResponse = await fetchWithUa(rootUrl, MOBILE_UA);
+          } catch {
+            /* fall through */
+          }
+        }
         if (rootResponse.ok) {
           response = rootResponse;
         }
