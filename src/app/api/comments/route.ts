@@ -138,10 +138,12 @@ export async function POST(request: NextRequest) {
       initialMessage,
       attachments,
       pinContextImageBase64: pinContextImageBase64Raw,
+      pinContextImageDataUrl: pinContextImageDataUrlRaw,
       pinScreenshotContextPath: pinScreenshotContextPathRaw,
       pinInCropX,
       pinInCropY,
     } = validated.data;
+    const pinContextImageDataUrl = pinContextImageDataUrlRaw?.trim() || null;
 
     const pinScreenshotContextPath = pinScreenshotContextPathRaw?.trim() ?? "";
     let pinContextImageBase64 = pinContextImageBase64Raw;
@@ -289,9 +291,37 @@ export async function POST(request: NextRequest) {
         savedScreenshotContextPath = saved.relativePath;
         await attachScreenshotToAnnotation(saved.relativePath);
       } else {
-        console.error(
-          "comments POST: saveContextPngFromBase64 failed:",
+        console.warn(
+          "comments POST: saveContextPngFromBase64 failed (filesystem write):",
           saved.error
+        );
+      }
+    }
+
+    // Always also persist the client-captured data URL when provided —
+    // works on read-only filesystems (Vercel etc.) where path-based storage
+    // can't. Stored in a separate column so legacy /screenshots/ paths still
+    // resolve normally; the sidebar prefers the data URL when both are set.
+    if (rootAnnotationId && pinContextImageDataUrl) {
+      const hasCropCoords =
+        typeof pinInCropX === "number" &&
+        typeof pinInCropY === "number" &&
+        Number.isFinite(pinInCropX) &&
+        Number.isFinite(pinInCropY);
+      try {
+        await db.annotation.update({
+          where: { id: rootAnnotationId },
+          data: {
+            screenshotContextDataUrl: pinContextImageDataUrl,
+            ...(hasCropCoords ? { pinInCropX, pinInCropY } : {}),
+          },
+          select: { id: true },
+        });
+      } catch (e) {
+        console.warn(
+          "comments POST: failed to attach screenshotContextDataUrl",
+          rootAnnotationId,
+          e,
         );
       }
     }

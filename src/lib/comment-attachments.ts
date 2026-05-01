@@ -9,6 +9,9 @@ export type CommentAttachmentStored = {
 export function attachmentPublicUrl(path: string): string {
   const p = path.trim();
   if (!p) return "";
+  // Inline data URLs (client-captured screenshots stored directly in the DB) —
+  // pass through as-is so an <img src> can render them without filesystem.
+  if (p.startsWith("data:")) return p;
   if (/^https?:\/\//i.test(p)) return p;
   const withSlash = p.startsWith("/") ? p : `/${p}`;
   if (withSlash.startsWith("/uploads/")) return withSlash;

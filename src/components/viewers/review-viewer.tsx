@@ -70,6 +70,10 @@ import {
   captureImageAroundPin,
   whenImageDrawable,
 } from "@/lib/capture-annotation-context";
+import {
+  captureIframeViewport,
+  pinFractionsInViewport,
+} from "@/lib/capture-iframe-screenshot";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
   return new Promise((resolve) => {
@@ -932,9 +936,12 @@ export function ReviewViewer({
         uploaded = await uploadCommentFiles(composeStaged.map((s) => s.file));
       }
 
-      // Pin snapshot: pre-uploaded path from /api/pin-crop (static website) or /api/pin-screenshot (live iframe), or base64 from client crop.
+      // Pin snapshot: pre-uploaded path from /api/pin-crop (static website),
+      // client-captured data URL via modern-screenshot (live iframe), or
+      // base64 from client crop (image / static fallback).
       let pinScreenshotContextPath: string | undefined;
       let pinContextImageBase64: string | undefined;
+      let pinContextImageDataUrl: string | undefined;
       let pinInCropX: number | undefined;
       let pinInCropY: number | undefined;
       const wantedPinSnapshot =
@@ -948,57 +955,29 @@ export function ReviewViewer({
           const useLivePinCapture =
             websiteViewMode === "live" && !websiteHasStaticReadyImage;
           if (useLivePinCapture) {
-            const iframe = getLiveWebsiteIframe();
-            let iframeScrollY = 0;
-            let iframeViewportW = 1280;
-            let iframeViewportH = 900;
-            if (iframe?.contentWindow && iframe.contentDocument) {
-              const win = iframe.contentWindow;
-              const doc = iframe.contentDocument;
-              iframeScrollY = Math.round(
-                doc.documentElement?.scrollTop || win.scrollY || 0
-              );
-              iframeViewportW = Math.round(
-                win.innerWidth || iframe.clientWidth || 1280
-              );
-              iframeViewportH = Math.round(
-                win.innerHeight || iframe.clientHeight || 900
-              );
-            }
+            // Live mode: capture the iframe's current viewport client-side
+            // via modern-screenshot. No third-party API; works on read-only
+            // hosts because the resulting data URL is stored directly in DB.
             try {
-              const res = await withTimeout(
-                fetch("/api/pin-screenshot", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  credentials: "same-origin",
-                  body: JSON.stringify({
-                    url: effectiveSourceUrl,
-                    viewportWidth: iframeViewportW,
-                    viewportHeight: iframeViewportH,
-                    scrollY: iframeScrollY,
-                    pinXPercent: annotationForContext.xPercent,
-                    pinYPercent: annotationForContext.yPercent,
-                    reviewItemId: reviewItem.id,
-                    reviewRevisionId: displayRevision?.id,
-                  }),
-                }).then(async (r) => {
-                  if (!r.ok) return null;
-                  return (await r.json()) as {
-                    screenshotContextPath: string;
-                    pinInCropX: number;
-                    pinInCropY: number;
-                  };
-                }),
-                50000
+              const iframe = getLiveWebsiteIframe();
+              const dataUrl = await withTimeout(
+                captureIframeViewport(iframe),
+                15000,
               );
-              if (res?.screenshotContextPath) {
-                pinContextImageBase64 = undefined;
-                pinInCropX = res.pinInCropX;
-                pinInCropY = res.pinInCropY;
-                pinScreenshotContextPath = res.screenshotContextPath;
+              if (dataUrl) {
+                const fractions = pinFractionsInViewport(
+                  iframe,
+                  annotationForContext.x,
+                  annotationForContext.y,
+                );
+                pinContextImageDataUrl = dataUrl;
+                if (fractions) {
+                  pinInCropX = fractions.x;
+                  pinInCropY = fractions.y;
+                }
               }
-            } catch {
-              /* comment still posts without a pin snapshot */
+            } catch (err) {
+              console.warn("[review-viewer] live pin capture failed:", err);
             }
           } else if (websiteHasStaticReadyImage && displayRevision?.id) {
             try {
@@ -1085,21 +1064,28 @@ export function ReviewViewer({
           rootAnnotationId: annotationId,
           initialMessage: newComment.trim(),
           ...(uploaded.length > 0 ? { attachments: uploaded } : {}),
-          ...(pinScreenshotContextPath
+          ...(pinContextImageDataUrl
             ? {
-                pinScreenshotContextPath,
+                pinContextImageDataUrl,
                 ...(pinInCropX != null && pinInCropY != null
                   ? { pinInCropX, pinInCropY }
                   : {}),
               }
-            : pinContextImageBase64
+            : pinScreenshotContextPath
               ? {
-                  pinContextImageBase64,
+                  pinScreenshotContextPath,
                   ...(pinInCropX != null && pinInCropY != null
                     ? { pinInCropX, pinInCropY }
                     : {}),
                 }
-              : {}),
+              : pinContextImageBase64
+                ? {
+                    pinContextImageBase64,
+                    ...(pinInCropX != null && pinInCropY != null
+                      ? { pinInCropX, pinInCropY }
+                      : {}),
+                  }
+                : {}),
         }),
       });
 
@@ -2343,7 +2329,11 @@ export function ReviewViewer({
       thread={detailThread}
       pinNumber={detailPinNumber}
       pinColor={detailAnnotation?.color ?? "#3b82f6"}
-      screenshotContextPath={detailAnnotation?.screenshotContextPath ?? null}
+      screenshotContextPath={
+        detailAnnotation?.screenshotContextDataUrl ??
+        detailAnnotation?.screenshotContextPath ??
+        null
+      }
       contextMarkerLeftPercent={detailContextMarkers.left}
       contextMarkerTopPercent={detailContextMarkers.top}
       onOpenScreenshot={(url) =>

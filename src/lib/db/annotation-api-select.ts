@@ -25,6 +25,7 @@ export const annotationScalarSelect = {
   targetTimestampMs: true,
   viewportMetaJson: true,
   screenshotContextPath: true,
+  screenshotContextDataUrl: true,
   color: true,
   createdAt: true,
   updatedAt: true,

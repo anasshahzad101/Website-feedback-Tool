@@ -17,6 +17,16 @@ export const commentThreadSchema = z
     attachments: z.array(commentAttachmentSchema).max(8).optional(),
     /** PNG data URL or base64 — saved on the root annotation with the thread (same auth as comment). */
     pinContextImageBase64: z.string().max(12_000_000).optional(),
+    /**
+     * Client-captured screenshot data URL (modern-screenshot of iframe viewport).
+     * Stored directly in the new screenshot_context_data_url column when the
+     * filesystem can't accept writes (Vercel etc.). Up to ~16MB.
+     */
+    pinContextImageDataUrl: z
+      .string()
+      .max(16_000_000)
+      .regex(/^data:image\/(png|jpeg|webp);base64,/i)
+      .optional(),
     /** Already-saved path from POST /api/pin-screenshot (mutually exclusive with pinContextImageBase64). */
     pinScreenshotContextPath: z
       .string()

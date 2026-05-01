@@ -287,6 +287,12 @@ model Annotation {
   targetTimestampMs     Int?           @map("target_timestamp_ms")
   viewportMetaJson      String?        @map("viewport_meta_json") @db.Text
   screenshotContextPath String?        @map("screenshot_context_path")
+  /**
+   * Base64 PNG data URL for the pin's context screenshot — used when the host
+   * filesystem can't accept writes (Vercel etc.) so screenshots still attach
+   * to comments. Up to 16MB per row; typical viewport capture is 200-700KB.
+   */
+  screenshotContextDataUrl String?     @map("screenshot_context_data_url") @db.MediumText
   /** 0–1: pin X position within the context crop image (for correct marker overlay). */
   pinInCropX            Float?         @map("pin_in_crop_x")
   /** 0–1: pin Y position within the context crop image. */
