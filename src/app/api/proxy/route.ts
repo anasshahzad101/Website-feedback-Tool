@@ -154,12 +154,22 @@ export async function GET(req: NextRequest) {
       // Run this synchronously first in <head> so it wins over bundled loaders.
       const runtimePatch = buildSameDocumentRuntimePatch(targetUrl, appOrigin);
 
+      // Force-show elements pinned at opacity:0 by Framer Motion / GSAP / AOS
+      // scroll-reveal animations. When the reveal JS doesn't fire (hydration
+      // glitches inside the iframe, missed Intersection Observer events, etc.)
+      // entire sections stay invisible. Match only patterns that pair opacity:0
+      // with a transform — that's the distinctive scroll-reveal signature.
+      const revealForceCss = `<style>[style*="opacity:0"][style*="translateY"],[style*="opacity:0"][style*="translateX"],[style*="opacity:0"][style*="scale"],[style*="opacity: 0"][style*="translate"],[style*="opacity: 0"][style*="scale"]{opacity:1!important;transform:none!important;}</style>`;
+
       // Rewrite absolute URLs of common resources to go through our proxy
       // Also inject base tag right after <head>
       if (/<head[^>]*>/i.test(html)) {
-        html = html.replace(/(<head[^>]*>)/i, `$1${baseTag}${runtimePatch}`);
+        html = html.replace(
+          /(<head[^>]*>)/i,
+          `$1${baseTag}${runtimePatch}${revealForceCss}`,
+        );
       } else {
-        html = baseTag + runtimePatch + html;
+        html = baseTag + runtimePatch + revealForceCss + html;
       }
 
       // Subresources → same-origin proxy URLs so canvas capture (html2canvas/modern-screenshot)
