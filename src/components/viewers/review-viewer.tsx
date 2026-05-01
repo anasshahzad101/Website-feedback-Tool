@@ -874,16 +874,42 @@ export function ReviewViewer({
     const iframe = websiteLiveIframeRef.current;
     if (iframe) {
       pendingCaptureRef.current = (async () => {
-        const dataUrl = await captureIframeViewport(iframe);
-        const fractions = pinFractionsInViewport(
-          iframe,
-          payload.docX,
-          payload.docY,
-        );
-        return { dataUrl, fractions };
+        const t0 =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        try {
+          const dataUrl = await captureIframeViewport(iframe);
+          const dt = Math.round(
+            (typeof performance !== "undefined"
+              ? performance.now()
+              : Date.now()) - t0,
+          );
+          const fractions = pinFractionsInViewport(
+            iframe,
+            payload.docX,
+            payload.docY,
+          );
+          if (!dataUrl) {
+            toast.message(
+              `Snapshot capture returned no image (took ${dt}ms — see console)`,
+            );
+          } else {
+            const kb = Math.round(dataUrl.length / 1024);
+            console.info(
+              `[captureIframeViewport] ok: ${kb}KB in ${dt}ms, fractions=`,
+              fractions,
+            );
+          }
+          return { dataUrl, fractions };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[captureIframeViewport] threw:", err);
+          toast.error(`Snapshot capture threw: ${msg.slice(0, 120)}`);
+          return { dataUrl: null, fractions: null };
+        }
       })();
     } else {
       pendingCaptureRef.current = null;
+      toast.message("Snapshot capture skipped — iframe not ready");
     }
   }, []);
 
