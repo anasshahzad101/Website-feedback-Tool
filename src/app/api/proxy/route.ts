@@ -203,6 +203,25 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/**
+ * Decode HTML entities that commonly appear inside URLs captured from HTML
+ * attributes (`src`, `href`, `srcset`, etc.). Without this, a URL like
+ * `?url=foo&amp;w=3840` ends up percent-encoded with the literal `&amp;` and
+ * the upstream sees query keys `amp;w` instead of `w` — breaking Next.js
+ * `/_next/image`, WordPress galleries, and anything else with `&` in queries.
+ */
+function decodeHtmlEntitiesInUrl(s: string): string {
+  return s
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#x0*27;/gi, "'")
+    .replace(/&#0*47;/g, "/")
+    .replace(/&#x0*2f;/gi, "/");
+}
+
 function escapeHtmlText(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -267,7 +286,7 @@ function rewriteLinkTagHrefsPhase(
     if (!hm) return tag;
     const q = hm[1];
     const val = hm[2];
-    const trimmed = val.trim();
+    const trimmed = decodeHtmlEntitiesInUrl(val.trim());
     let next: string | null = null;
 
     if (phase === "root-relative") {
@@ -536,7 +555,7 @@ function rewriteSubresourceRootRelativeUrls(
     /((?:src)=["'])(\/(?!\/)[^"']*)(["'])/gi,
     (match, prefix, rootRelativePath, suffix) => {
       try {
-        const absUrl = `${baseUrl.origin}${rootRelativePath}`;
+        const absUrl = `${baseUrl.origin}${decodeHtmlEntitiesInUrl(rootRelativePath)}`;
         return `${prefix}${proxyAssetUrl(appOrigin, absUrl)}${suffix}`;
       } catch {
         return match;
@@ -553,7 +572,7 @@ function rewriteSubresourceRootRelativeUrls(
         const bits = trimmed.split(/\s+/);
         const candidate = bits[0] ?? "";
         if (!candidate.startsWith("/") || candidate.startsWith("//")) return trimmed;
-        const absUrl = `${baseUrl.origin}${candidate}`;
+        const absUrl = `${baseUrl.origin}${decodeHtmlEntitiesInUrl(candidate)}`;
         return [proxyAssetUrl(appOrigin, absUrl), ...bits.slice(1)].join(" ");
       })
       .join(", ");
@@ -585,7 +604,7 @@ function rewritePathRelativeCdnPatterns(
     attr: string,
     value: string
   ): string | null => {
-    const t = value.trim();
+    const t = decodeHtmlEntitiesInUrl(value.trim());
     if (!t || /^(https?:|\/\/|data:|#|\/)/i.test(t)) return null;
     if (!/^(w=\d+\/|cdn-cgi\/)/i.test(t)) return null;
     try {
@@ -653,7 +672,7 @@ function rewriteSameSiteAbsoluteSubresourceUrlsToProxy(
   };
 
   const rewriteValue = (raw: string): string => {
-    const t = raw.trim();
+    const t = decodeHtmlEntitiesInUrl(raw.trim());
     if (!t || t.startsWith("data:") || t.startsWith("#")) return raw;
     try {
       const u = new URL(t, siteUrl);
@@ -719,7 +738,7 @@ function rewriteNavigationalRootRelativeToProxy(
     /<((?!link\b)[a-zA-Z][\w-]*)\b([^>]*?\s)(href|action|formaction)=(["'])(\/(?!\/)[^"']*)\4/gi,
     (match, tag, mid, attr, q, rootRelativePath) => {
       try {
-        const absUrl = `${siteUrl.origin}${rootRelativePath}`;
+        const absUrl = `${siteUrl.origin}${decodeHtmlEntitiesInUrl(rootRelativePath)}`;
         const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(absUrl)}`;
         return `<${tag}${mid}${attr}=${q}${proxied}${q}`;
       } catch {
@@ -747,9 +766,10 @@ function rewriteSameSiteAbsoluteNavUrlsToProxy(
           "gi"
         ),
         (_m, tag, mid, attr, q, _o, pathPart: string) => {
-          const abs = origin + pathPart;
+          const decodedPath = decodeHtmlEntitiesInUrl(pathPart);
+          const abs = origin + decodedPath;
           if (abs.includes(`${appOrigin}/api/proxy`)) {
-            return `<${tag}${mid}${attr}=${q}${origin}${pathPart}${q}`;
+            return `<${tag}${mid}${attr}=${q}${origin}${decodedPath}${q}`;
           }
           const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(abs)}`;
           return `<${tag}${mid}${attr}=${q}${proxied}${q}`;
@@ -762,7 +782,8 @@ function rewriteSameSiteAbsoluteNavUrlsToProxy(
         "gi"
       ),
       (_m, tag, mid, attr, q, _protoHost, rest: string) => {
-        const path = rest && !rest.startsWith("/") ? `/${rest}` : rest || "/";
+        const decodedRest = decodeHtmlEntitiesInUrl(rest);
+        const path = decodedRest && !decodedRest.startsWith("/") ? `/${decodedRest}` : decodedRest || "/";
         const abs = new URL(path, `${siteUrl.protocol}//${host}`).toString();
         const proxied = `${appOrigin}/api/proxy?url=${encodeURIComponent(abs)}`;
         return `<${tag}${mid}${attr}=${q}${proxied}${q}`;
