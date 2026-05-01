@@ -22,6 +22,7 @@ import {
   type PinPositionsPayload,
   type ProxyErrorPayload,
   type QueryRectsResultPayload,
+  type UrlChangedPayload,
 } from "@/lib/live-iframe-bridge";
 
 export type PinPosition = PinPositionsPayload["positions"][number];
@@ -86,6 +87,8 @@ export interface LiveWebsiteViewerProps {
   onQueryRectsResult?: (payload: QueryRectsResultPayload) => void;
   /** Fired when the proxy returns its error page (target unreachable / blocked). */
   onProxyError?: (payload: ProxyErrorPayload) => void;
+  /** Fired on every URL change inside the iframe (initial load, pushState, popstate). */
+  onUrlChange?: (payload: UrlChangedPayload) => void;
   /** Catch-all for any well-formed bridge message (after the typed callbacks). */
   onBridgeMessage?: (message: IncomingBridgeMessage) => void;
 }
@@ -113,6 +116,7 @@ export const LiveWebsiteViewer = forwardRef<
     onPinClick,
     onQueryRectsResult,
     onProxyError,
+    onUrlChange,
     onBridgeMessage,
   },
   forwardedRef,
@@ -121,32 +125,35 @@ export const LiveWebsiteViewer = forwardRef<
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeSrc, setIframeSrc] = useState<string>("");
   const [reloadKey, setReloadKey] = useState(0);
-  const [bridgeReady, setBridgeReady] = useState(false);
+  // Increments on every `ready` event (initial mount + every internal iframe
+  // navigation that reloads the document). All "push state to iframe" effects
+  // depend on this counter so they re-fire after navigation.
+  const [readyTick, setReadyTick] = useState(0);
 
   useImperativeHandle(forwardedRef, () => iframeRef.current as HTMLIFrameElement, []);
 
-  // Each reload (new src) tears down the iframe document, so the bridge must
-  // re-register before we can push commands again.
+  // Each reload (new src prop) tears down the iframe document. Reset the
+  // counter so the next ready fires the effects again.
   useEffect(() => {
-    setBridgeReady(false);
+    setReadyTick(0);
   }, [iframeSrc]);
 
-  // Push the current mode to the iframe whenever it changes — and again as
-  // soon as the bridge announces ready, so the very first paint is correct.
+  // Push the current mode to the iframe whenever it changes — and again on
+  // every ready, so SPA-internal navigations re-sync the mode automatically.
   useEffect(() => {
-    if (!mode || !bridgeReady) return;
+    if (!mode || readyTick === 0) return;
     postCommand(iframeRef.current, { type: "set-mode", payload: { mode } });
-  }, [mode, bridgeReady]);
+  }, [mode, readyTick]);
 
-  // Push pin anchors into the iframe whenever they change. The iframe reprojects
-  // and broadcasts viewport positions back; on first ready we always re-push.
+  // Push pin anchors into the iframe. Re-fires on every ready so iframe
+  // navigation restores anchors without needing a parent prop change.
   useEffect(() => {
-    if (!bridgeReady) return;
+    if (readyTick === 0) return;
     postCommand(iframeRef.current, {
       type: "set-pin-anchors",
       payload: { anchors: pinAnchors ?? [] },
     });
-  }, [pinAnchors, bridgeReady]);
+  }, [pinAnchors, readyTick]);
 
   // Latest broadcast from the iframe. Stored as a Map for O(1) overlay lookup.
   const [overlayState, setOverlayState] = useState<LivePinOverlayState>(() => ({
@@ -174,6 +181,7 @@ export const LiveWebsiteViewer = forwardRef<
     onPinClick,
     onQueryRectsResult,
     onProxyError,
+    onUrlChange,
     onBridgeMessage,
   });
   useEffect(() => {
@@ -182,6 +190,7 @@ export const LiveWebsiteViewer = forwardRef<
       onPinClick,
       onQueryRectsResult,
       onProxyError,
+      onUrlChange,
       onBridgeMessage,
     };
   }, [
@@ -189,6 +198,7 @@ export const LiveWebsiteViewer = forwardRef<
     onPinClick,
     onQueryRectsResult,
     onProxyError,
+    onUrlChange,
     onBridgeMessage,
   ]);
 
@@ -200,7 +210,9 @@ export const LiveWebsiteViewer = forwardRef<
       const h = handlersRef.current;
       switch (msg.type) {
         case "ready":
-          setBridgeReady(true);
+          // Bump the counter so the mode/anchors useEffects re-fire and
+          // re-sync state after iframe internal navigations.
+          setReadyTick((n) => n + 1);
           h.onBridgeReady?.(msg.payload);
           break;
         case "pin-click":
@@ -223,6 +235,9 @@ export const LiveWebsiteViewer = forwardRef<
         }
         case "proxy-error":
           h.onProxyError?.(msg.payload);
+          break;
+        case "url-changed":
+          h.onUrlChange?.(msg.payload);
           break;
       }
       h.onBridgeMessage?.(msg);

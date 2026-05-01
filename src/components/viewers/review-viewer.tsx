@@ -28,9 +28,11 @@ import { LiveWebsiteViewer, type LivePinOverlayState } from "@/components/viewer
 import {
   parseLiveAnchorMeta,
   postCommand,
+  samePathname,
   type LiveIframeMode,
   type PinAnchor,
   type PinClickPayload,
+  type UrlChangedPayload,
 } from "@/lib/live-iframe-bridge";
 import { v4 as uuidv4 } from "uuid";
 import { Button } from "@/components/ui/button";
@@ -312,10 +314,25 @@ export function ReviewViewer({
   const [pendingAnnotation, setPendingAnnotation] = useState<NewAnnotation | null>(null);
   /**
    * For live-website annotations, the bridge gives us DOM-anchored click data
-   * (selector + element-relative offset + scroll/viewport). We stash it next
-   * to `pendingAnnotation` so the save call can persist it as `viewportMetaJson`.
+   * (selector + element-relative offset + scroll/viewport + pathname). We
+   * stash it next to `pendingAnnotation` so the save call can persist it as
+   * `viewportMetaJson`.
    */
   const [pendingLiveAnchor, setPendingLiveAnchor] = useState<PinClickPayload | null>(null);
+  /**
+   * Pathname inside the proxied site that the iframe is currently showing.
+   * Updated by url-changed bridge events. Used to filter pins so only those
+   * placed on the current page render in the overlay.
+   */
+  const [currentIframePathname, setCurrentIframePathname] = useState<string>(() => {
+    const src = reviewItem.sourceUrl ?? "";
+    if (!src) return "/";
+    try {
+      return new URL(src).pathname || "/";
+    } catch {
+      return "/";
+    }
+  });
   /** Markup-style sidebar: filter + search */
   const [commentSidebarFilter, setCommentSidebarFilter] = useState<
     "all" | "open" | "resolved"
@@ -781,6 +798,16 @@ export function ReviewViewer({
   }, []);
 
   /**
+   * Track the iframe's current URL inside the proxied site. Drives pin
+   * filtering: only pins placed on the current pathname render in the overlay.
+   */
+  const handleLiveUrlChange = useCallback((payload: UrlChangedPayload) => {
+    if (typeof payload.pathname === "string" && payload.pathname.length > 0) {
+      setCurrentIframePathname(payload.pathname);
+    }
+  }, []);
+
+  /**
    * If the proxy returns its 502 error page, fall back to the latest ready
    * snapshot for this revision. We auto-switch view modes only once per
    * source-url change so the user can manually flip back to "Live" via the
@@ -867,6 +894,11 @@ export function ReviewViewer({
               viewportH: liveAnchor.viewportH,
               docX: liveAnchor.docX,
               docY: liveAnchor.docY,
+              // URL the pin was placed on. Lets the overlay only render this
+              // pin when the iframe is back on the same page.
+              pathname: liveAnchor.pathname || currentIframePathname,
+              search: liveAnchor.search || "",
+              hash: liveAnchor.hash || "",
             })
           : undefined;
         const res = await fetch("/api/annotations", {
@@ -1151,6 +1183,8 @@ export function ReviewViewer({
     captureGuestAuth,
     annotations,
     getLiveWebsiteIframe,
+    pendingLiveAnchor,
+    currentIframePathname,
   ]);
 
   const handleCancelPending = useCallback(() => {
@@ -1163,6 +1197,30 @@ export function ReviewViewer({
     setNewComment("");
     clearComposeStaged();
   }, [clearComposeStaged]);
+
+  /**
+   * Toggle annotate/browse with proper cleanup. Switching to browse cancels
+   * any unsaved pending pin so the composer doesn't linger over a clickable
+   * page; the iframe also gets a synchronous set-mode command so it stops
+   * intercepting clicks immediately (no postMessage round-trip lag).
+   */
+  const handleSetInteractionMode = useCallback(
+    (mode: "annotate" | "browse") => {
+      if (interactionMode === mode) return;
+      if (mode === "browse" && pendingAnnotation) {
+        handleCancelPending();
+      }
+      setInteractionMode(mode);
+      // Synchronous bridge nudge so the iframe stops intercepting clicks
+      // immediately. postCommand no-ops if the iframe isn't running our
+      // bridge (screenshot mode, no source URL, etc.).
+      postCommand(websiteLiveIframeRef.current, {
+        type: "set-mode",
+        payload: { mode },
+      });
+    },
+    [interactionMode, pendingAnnotation, handleCancelPending],
+  );
 
   const handleReply = useCallback(
     async (threadId: string) => {
@@ -1576,6 +1634,12 @@ export function ReviewViewer({
     annotations.forEach((ann, idx) => {
       const meta = parseLiveAnchorMeta(ann.viewportMetaJson);
       if (!meta) return;
+      // Only render pins for the URL the iframe is currently showing.
+      // Legacy pins (no pathname stored) fall through and render on every
+      // page so existing data isn't silently lost.
+      if (meta.pathname && !samePathname(meta.pathname, currentIframePathname)) {
+        return;
+      }
       anchors.push({ id: ann.id, ...meta });
       const status = ann.commentThread?.status;
       const color = status
@@ -1597,6 +1661,7 @@ export function ReviewViewer({
         isSelected: selectedAnnotationId === ann.id,
       });
     });
+    // The pending pin always renders — it was just placed on the current page.
     if (pendingAnnotation && pendingLiveAnchor) {
       anchors.push({
         id: pendingAnnotation.id,
@@ -1621,6 +1686,7 @@ export function ReviewViewer({
     pendingAnnotation,
     pendingLiveAnchor,
     selectedAnnotationId,
+    currentIframePathname,
   ]);
 
   /**
@@ -1747,7 +1813,7 @@ export function ReviewViewer({
                       ? "bg-primary text-primary-foreground"
                       : "bg-background text-muted-foreground hover:text-foreground"
                   }`}
-                  onClick={() => setInteractionMode("annotate")}
+                  onClick={() => handleSetInteractionMode("annotate")}
                 >
                   <MousePointer className="h-3 w-3" />
                   Annotate
@@ -1758,7 +1824,7 @@ export function ReviewViewer({
                       ? "bg-primary text-primary-foreground"
                       : "bg-background text-muted-foreground hover:text-foreground"
                   }`}
-                  onClick={() => setInteractionMode("browse")}
+                  onClick={() => handleSetInteractionMode("browse")}
                 >
                   <Hand className="h-3 w-3" />
                   Browse
@@ -1866,6 +1932,9 @@ export function ReviewViewer({
                 }
                 onLiveProxyError={
                   isLiveWebsiteMode ? handleLiveProxyError : undefined
+                }
+                onLiveUrlChange={
+                  isLiveWebsiteMode ? handleLiveUrlChange : undefined
                 }
               />
               {annotationLayerActive && (
@@ -2447,6 +2516,7 @@ function ContentDisplay({
   livePinAnchors,
   renderLiveOverlay,
   onLiveProxyError,
+  onLiveUrlChange,
 }: {
   type: ReviewItemType;
   sourceUrl: string | null;
@@ -2468,6 +2538,9 @@ function ContentDisplay({
   ) => React.ReactNode;
   onLiveProxyError?: (
     payload: import("@/lib/live-iframe-bridge").ProxyErrorPayload,
+  ) => void;
+  onLiveUrlChange?: (
+    payload: import("@/lib/live-iframe-bridge").UrlChangedPayload,
   ) => void;
 }) {
   // ── WEBSITE ──────────────────────────────────────────────────────────────
@@ -2531,6 +2604,7 @@ function ContentDisplay({
           pinAnchors={livePinAnchors}
           renderOverlay={renderLiveOverlay}
           onProxyError={onLiveProxyError}
+          onUrlChange={onLiveUrlChange}
         />
       );
     }

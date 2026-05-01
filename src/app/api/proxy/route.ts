@@ -496,7 +496,10 @@ function buildSameDocumentRuntimePatch(targetUrl: URL, appOrigin: string): strin
       scrollX:window.scrollX||window.pageXOffset||0,
       scrollY:window.scrollY||window.pageYOffset||0,
       docX:e.pageX,
-      docY:e.pageY
+      docY:e.pageY,
+      pathname:String(location.pathname||"/"),
+      search:String(location.search||""),
+      hash:String(location.hash||"")
     });
   }
   document.addEventListener("click",wftOnClick,true);
@@ -599,7 +602,26 @@ function buildSameDocumentRuntimePatch(targetUrl: URL, appOrigin: string): strin
     }
     if(document.body){wftStartObserver();} else {document.addEventListener("DOMContentLoaded",wftStartObserver);}
   }
-  function wftReady(){wftSend("ready",{href:String(location.href||"")});}
+  /* URL tracking: notify the parent whenever the proxied site's pathname/
+     search/hash changes — initial load, SPA pushState/replaceState, and
+     popstate/hashchange. Parent uses this to filter pins by current URL. */
+  function wftSendUrl(){
+    wftSend("url-changed",{
+      pathname:String(location.pathname||"/"),
+      search:String(location.search||""),
+      hash:String(location.hash||""),
+      href:T+(location.pathname||"/")+(location.search||"")+(location.hash||"")
+    });
+  }
+  try{
+    var _ps=history.pushState;
+    history.pushState=function(){var r=_ps.apply(this,arguments);try{wftSendUrl();}catch(_){}return r;};
+    var _rs=history.replaceState;
+    history.replaceState=function(){var r=_rs.apply(this,arguments);try{wftSendUrl();}catch(_){}return r;};
+  }catch(_){}
+  window.addEventListener("popstate",wftSendUrl);
+  window.addEventListener("hashchange",wftSendUrl);
+  function wftReady(){wftSend("ready",{href:String(location.href||"")});wftSendUrl();}
   if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",wftReady);} else {wftReady();}
 })();`;
   return `<script>${js}</script>`;

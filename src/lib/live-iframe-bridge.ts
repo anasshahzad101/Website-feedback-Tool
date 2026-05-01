@@ -28,6 +28,11 @@ export interface PinClickPayload {
   scrollY: number;
   docX: number;
   docY: number;
+  /** Path inside the proxied site at click time. Lets the parent tag the new
+   *  pin with a URL so it only renders when the iframe is on that page. */
+  pathname: string;
+  search: string;
+  hash: string;
 }
 
 /** Iframe → parent: response to a `query-rects` command. */
@@ -68,6 +73,20 @@ export interface ProxyErrorPayload {
   message: string;
 }
 
+/**
+ * Iframe → parent: the proxied page navigated. Fires on initial ready, on
+ * SPA pushState/replaceState, and on popstate/hashchange. Path components
+ * reflect the *target site's* path (after the runtime patch's initial
+ * replaceState aliases the iframe URL to the target pathname).
+ */
+export interface UrlChangedPayload {
+  pathname: string;
+  search: string;
+  hash: string;
+  /** Best-effort: the original target site's full URL, derived from origin + pathname. */
+  href: string;
+}
+
 /** Iframe → parent: re-projected screen positions for known pin anchors. */
 export interface PinPositionsPayload {
   positions: Array<{
@@ -91,7 +110,8 @@ export type IncomingBridgeMessage =
   | { type: "pin-click"; payload: PinClickPayload }
   | { type: "query-rects-result"; payload: QueryRectsResultPayload }
   | { type: "pin-positions"; payload: PinPositionsPayload }
-  | { type: "proxy-error"; payload: ProxyErrorPayload };
+  | { type: "proxy-error"; payload: ProxyErrorPayload }
+  | { type: "url-changed"; payload: UrlChangedPayload };
 
 /** Parent → iframe commands. */
 export type OutgoingBridgeCommand =
@@ -159,7 +179,7 @@ export function postCommand(
  */
 export function parseLiveAnchorMeta(
   viewportMetaJson: string | null | undefined,
-): Omit<PinAnchor, "id"> | null {
+): (Omit<PinAnchor, "id"> & { pathname?: string }) | null {
   if (!viewportMetaJson) return null;
   let raw: unknown;
   try {
@@ -178,7 +198,15 @@ export function parseLiveAnchorMeta(
     offsetYPct: num(o.offsetYPct, 0),
     docX: num(o.docX, 0),
     docY: num(o.docY, 0),
+    pathname: typeof o.pathname === "string" ? o.pathname : undefined,
   };
+}
+
+/** Compare iframe pathnames for "same page" purposes. Trailing slash insensitive. */
+export function samePathname(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (a == null || b == null) return false;
+  const norm = (s: string) => (s.length > 1 && s.endsWith("/") ? s.slice(0, -1) : s);
+  return norm(a) === norm(b);
 }
 
 /**
@@ -219,6 +247,11 @@ export function parseBridgeMessage(
       return {
         type: "proxy-error",
         payload: data.payload as ProxyErrorPayload,
+      };
+    case "url-changed":
+      return {
+        type: "url-changed",
+        payload: data.payload as UrlChangedPayload,
       };
     default:
       return null;
