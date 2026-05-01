@@ -71,9 +71,13 @@ export async function captureIframeViewport(
       ignoreElements: (el) =>
         el.tagName === "IFRAME" || el.tagName === "SCRIPT",
       logging: false,
-      // Use foreignObject rendering when supported — much faster than
-      // html2canvas's full DOM walk, less likely to choke on complex CSS.
-      foreignObjectRendering: true,
+      // foreignObjectRendering is faster but renders many real-world pages
+      // as blank canvases when CSS is complex (CSS-in-JS, animations, fixed
+      // positioning, viewport units). Use the slower full DOM walk instead.
+      foreignObjectRendering: false,
+      // Render fonts with html2canvas's own pipeline so cross-origin
+      // webfonts don't taint the canvas with empty boxes.
+      removeContainer: true,
     });
     const dataUrl = canvas.toDataURL("image/png");
     console.log(
