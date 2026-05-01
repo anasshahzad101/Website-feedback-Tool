@@ -4,7 +4,6 @@ import {
   forwardRef,
   useCallback,
   useEffect,
-  useImperativeHandle,
   useRef,
   useState,
 } from "react";
@@ -130,7 +129,22 @@ export const LiveWebsiteViewer = forwardRef<
   // depend on this counter so they re-fire after navigation.
   const [readyTick, setReadyTick] = useState(0);
 
-  useImperativeHandle(forwardedRef, () => iframeRef.current as HTMLIFrameElement, []);
+  // Callback ref that updates BOTH our internal ref and the forwarded ref on
+  // every mount/unmount. useImperativeHandle with `[]` deps was running only
+  // once and pointing the parent at a detached element after iframe-key
+  // remounts (URL changes, reload), so the parent's iframe ref appeared null
+  // when click-to-pin tried to use it.
+  const setIframeNode = useCallback(
+    (node: HTMLIFrameElement | null) => {
+      iframeRef.current = node;
+      if (typeof forwardedRef === "function") {
+        forwardedRef(node);
+      } else if (forwardedRef) {
+        forwardedRef.current = node;
+      }
+    },
+    [forwardedRef],
+  );
 
   // Each reload (new src prop) tears down the iframe document. Reset the
   // counter so the next ready fires the effects again.
@@ -338,7 +352,7 @@ export const LiveWebsiteViewer = forwardRef<
           <>
             <iframe
               key={`${iframeSrc}#${reloadKey}`}
-              ref={iframeRef}
+              ref={setIframeNode}
               src={iframeSrc}
               title={sourceUrl}
               className="relative z-0 block h-full w-full border-0"
