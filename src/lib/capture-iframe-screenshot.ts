@@ -1,14 +1,15 @@
-import html2canvas from "html2canvas";
+import { domToPng } from "modern-screenshot";
 
 /**
  * Capture the live iframe's currently-visible viewport as a base64 PNG.
  * Same-origin only — works because /api/proxy serves at our app origin.
  *
- * Uses html2canvas: it walks the iframe's DOM, reads computed styles, and
- * rasterizes to a canvas. We pass the viewport rectangle directly via x/y/
- * width/height + windowWidth/windowHeight so html2canvas only renders what
- * the user can see — much faster than full-body capture, and avoids many
- * issues with very tall/heavy SPAs.
+ * Uses modern-screenshot's domToPng: it serializes the DOM into an SVG
+ * <foreignObject> and lets the browser rasterize it natively. That means
+ * any CSS the browser supports (including lab(), oklch(), oklab(), color()
+ * which html2canvas's homegrown parser cannot) renders correctly. The
+ * proxy adds Access-Control-Allow-Origin:* on every response so canvas
+ * pixels are readable without taint.
  *
  * Returns null if capture fails. Callers must handle that — the comment
  * thread should save without a thumbnail rather than blocking the user.
@@ -47,7 +48,7 @@ export async function captureIframeViewport(
       console.warn("[captureIframeViewport] zero viewport dims", { vw, vh });
       return null;
     }
-    console.log("[captureIframeViewport] starting html2canvas", {
+    console.log("[captureIframeViewport] starting modern-screenshot", {
       scrollX,
       scrollY,
       vw,
@@ -55,37 +56,62 @@ export async function captureIframeViewport(
       bodyChildren: doc.body.children.length,
     });
 
-    const canvas = await html2canvas(doc.body, {
-      x: scrollX,
-      y: scrollY,
-      width: vw,
-      height: vh,
-      // Allow tainted canvas — better to get a partial screenshot with
-      // missing cross-origin images than no screenshot at all.
-      allowTaint: true,
-      useCORS: true,
+    // domToPng captures the entire body. We crop to the visible viewport
+    // afterward via canvas. Pass `filter` to skip cross-origin iframes /
+    // script tags (the browser can't access their pixels).
+    const fullPng = await domToPng(doc.body, {
       backgroundColor: "#ffffff",
-      scale: 1,
-      // Skip embedded iframes (chat widgets, ads). They're cross-origin
-      // and html2canvas can't read them anyway; trying just adds latency.
-      ignoreElements: (el) =>
-        el.tagName === "IFRAME" || el.tagName === "SCRIPT",
-      logging: false,
-      // foreignObjectRendering is faster but renders many real-world pages
-      // as blank canvases when CSS is complex (CSS-in-JS, animations, fixed
-      // positioning, viewport units). Use the slower full DOM walk instead.
-      foreignObjectRendering: false,
-      // Render fonts with html2canvas's own pipeline so cross-origin
-      // webfonts don't taint the canvas with empty boxes.
-      removeContainer: true,
+      filter: (el: Element | Node) => {
+        if (el instanceof Element) {
+          if (el.tagName === "IFRAME" || el.tagName === "SCRIPT") return false;
+        }
+        return true;
+      },
     });
-    const dataUrl = canvas.toDataURL("image/png");
+
+    if (!fullPng) {
+      console.warn("[captureIframeViewport] modern-screenshot returned empty");
+      return null;
+    }
+
+    // Crop to viewport rectangle.
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("captured image failed to load"));
+      img.src = fullPng;
+    });
+
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = vw;
+    cropCanvas.height = vh;
+    const ctx = cropCanvas.getContext("2d");
+    if (!ctx) {
+      console.warn("[captureIframeViewport] no 2d context");
+      return null;
+    }
+    // Source rect in the full-body capture. img.naturalWidth corresponds to
+    // the body's full width; we offset by scroll position to get the visible
+    // viewport area.
+    ctx.drawImage(
+      img,
+      scrollX,
+      scrollY,
+      vw,
+      vh,
+      0,
+      0,
+      vw,
+      vh,
+    );
+    const dataUrl = cropCanvas.toDataURL("image/png");
     console.log(
-      `[captureIframeViewport] html2canvas ok: ${Math.round(dataUrl.length / 1024)}KB`,
+      `[captureIframeViewport] modern-screenshot ok: ${Math.round(dataUrl.length / 1024)}KB`,
     );
     return dataUrl;
   } catch (e) {
-    console.error("[captureIframeViewport] html2canvas threw:", e);
+    console.error("[captureIframeViewport] modern-screenshot threw:", e);
     return null;
   }
 }
