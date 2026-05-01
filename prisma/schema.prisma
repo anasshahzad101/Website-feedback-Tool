@@ -282,10 +282,10 @@ model Annotation {
   height                Float?
   widthPercent          Float?         @map("width_percent")
   heightPercent         Float?         @map("height_percent")
-  pointsJson            String?        @map("points_json") @db.Text
+  pointsJson            String?        @map("points_json") @db.MediumText
   targetFrame           Int?           @map("target_frame")
   targetTimestampMs     Int?           @map("target_timestamp_ms")
-  viewportMetaJson      String?        @map("viewport_meta_json") @db.Text
+  viewportMetaJson      String?        @map("viewport_meta_json") @db.MediumText
   screenshotContextPath String?        @map("screenshot_context_path")
   /**
    * Base64 PNG data URL for the pin's context screenshot — used when the host
@@ -418,7 +418,7 @@ model ActivityLog {
   actionType   ActivityActionType @map("action_type")
   actorUserId  String?            @map("actor_user_id")
   actorGuestId String?            @map("actor_guest_id")
-  metaJson     String?            @map("meta_json") @db.Text
+  metaJson     String?            @map("meta_json") @db.MediumText
   createdAt    DateTime           @default(now()) @map("created_at")
 
   // Relations — entityType/entityId are stored as strings (polymorphic, no FK constraints)
@@ -438,7 +438,7 @@ model EmailNotification {
   recipientEmail  String             @map("recipient_email")
   recipientUserId String?            @map("recipient_user_id")
   type            NotificationType
-  payloadJson     String             @map("payload_json") @db.Text
+  payloadJson     String             @map("payload_json") @db.MediumText
   sentAt          DateTime?          @map("sent_at")
   failedAt        DateTime?          @map("failed_at")
   status          NotificationStatus @default(PENDING)
