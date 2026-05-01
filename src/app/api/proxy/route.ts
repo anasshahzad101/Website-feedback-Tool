@@ -125,7 +125,7 @@ export async function GET(req: NextRequest) {
       // SPAs (e.g. Canva) use fetch('/api/...'), XHR, and webpack chunk paths that resolve against
       // the iframe document URL (our app host), not <base>. That yields 404s on /api/_assets, etc.
       // Run this synchronously first in <head> so it wins over bundled loaders.
-      const runtimePatch = buildSameDocumentRuntimePatch(targetUrl.origin, appOrigin);
+      const runtimePatch = buildSameDocumentRuntimePatch(targetUrl, appOrigin);
 
       // Rewrite absolute URLs of common resources to go through our proxy
       // Also inject base tag right after <head>
@@ -336,11 +336,28 @@ function rewriteLinkTagHrefsPhase(
  * Inline script inserted at the start of proxied HTML: many SPAs resolve `/api/...`, XHR, and script
  * URLs against the iframe document (our app origin), ignoring `<base>`. Rewrites those at runtime.
  */
-function buildSameDocumentRuntimePatch(targetOrigin: string, appOrigin: string): string {
-  const T = JSON.stringify(targetOrigin);
+function buildSameDocumentRuntimePatch(targetUrl: URL, appOrigin: string): string {
+  const T = JSON.stringify(targetUrl.origin);
   const A = JSON.stringify(appOrigin);
+  // SPA routers (react-router, Next.js App Router, vue-router) read
+  // window.location.pathname during hydration. Inside our iframe that returns
+  // "/api/proxy", so home / matched routes never render. We replaceState the
+  // iframe URL to the proxied site's actual pathname so usePathname() returns
+  // the value the SPA expects. Same-origin replaceState does not reload.
+  const TPATH = JSON.stringify(targetUrl.pathname || "/");
+  const TSEARCH = JSON.stringify(targetUrl.search || "");
+  const THASH = JSON.stringify(targetUrl.hash || "");
   const js = `(function(){
   var T=${T},A=${A},PH=A+"/api/proxy?url=";
+  /* ---- Pretend the iframe URL is the target's pathname so SPA routers match ---- */
+  try{
+    if(window.parent!==window){
+      var tp=${TPATH},ts=${TSEARCH},th=${THASH};
+      var newUrl=tp+ts+th;
+      var cur=location.pathname+location.search+location.hash;
+      if(cur!==newUrl){history.replaceState(history.state||{},"",newUrl);}
+    }
+  }catch(e){}
   function P(u){return PH+encodeURIComponent(u);}
   function R(u){
     if(u==null||typeof u!=="string")return u;
