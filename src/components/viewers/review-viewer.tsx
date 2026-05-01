@@ -797,6 +797,7 @@ export function ReviewViewer({
     setPendingAnnotation(annotation);
     setPendingAnnotationId(annotation.id);
     setPendingLiveAnchor(null);
+    pendingCaptureRef.current = null;
     setNewComment("");
     setSelectedAnnotationId(annotation.id);
   }, []);
@@ -836,7 +837,17 @@ export function ReviewViewer({
    * Bridge delivered a click from the live website iframe. Translate the
    * DOM-anchored payload into a `NewAnnotation` so the existing pending-pin /
    * composer flow takes over, and stash the raw payload for `viewportMetaJson`.
+   *
+   * Critically, we ALSO kick off the screenshot capture *now* — at the moment
+   * the pin is placed, while the iframe is still showing the area the user
+   * clicked. If we waited until submit, scrolling or layout shifts would
+   * make us capture the wrong region. The promise is stored so handleSendComment
+   * can await it (with a fallback timeout) before posting.
    */
+  const pendingCaptureRef = useRef<Promise<{
+    dataUrl: string | null;
+    fractions: { x: number; y: number } | null;
+  }> | null>(null);
   const handleLivePinClick = useCallback((payload: PinClickPayload) => {
     const id = uuidv4();
     const clamp01 = (n: number) =>
@@ -858,6 +869,22 @@ export function ReviewViewer({
     setPendingLiveAnchor(payload);
     setNewComment("");
     setSelectedAnnotationId(id);
+    // Capture the iframe's current viewport snapshot RIGHT NOW so the
+    // screenshot reflects what the user was looking at when they clicked.
+    const iframe = websiteLiveIframeRef.current;
+    if (iframe) {
+      pendingCaptureRef.current = (async () => {
+        const dataUrl = await captureIframeViewport(iframe);
+        const fractions = pinFractionsInViewport(
+          iframe,
+          payload.docX,
+          payload.docY,
+        );
+        return { dataUrl, fractions };
+      })();
+    } else {
+      pendingCaptureRef.current = null;
+    }
   }, []);
 
   const handleAnnotationSelected = useCallback(
@@ -955,29 +982,25 @@ export function ReviewViewer({
           const useLivePinCapture =
             websiteViewMode === "live" && !websiteHasStaticReadyImage;
           if (useLivePinCapture) {
-            // Live mode: capture the iframe's current viewport client-side
-            // via modern-screenshot. No third-party API; works on read-only
-            // hosts because the resulting data URL is stored directly in DB.
+            // Live mode: read the screenshot that was kicked off at click
+            // time (in handleLivePinClick). Capturing here would grab the
+            // current viewport, which may have scrolled away from the pin.
             try {
-              const iframe = getLiveWebsiteIframe();
-              const dataUrl = await withTimeout(
-                captureIframeViewport(iframe),
+              const captureResult = await withTimeout(
+                pendingCaptureRef.current ?? Promise.resolve(null),
                 15000,
               );
-              if (dataUrl) {
-                const fractions = pinFractionsInViewport(
-                  iframe,
-                  annotationForContext.x,
-                  annotationForContext.y,
-                );
-                pinContextImageDataUrl = dataUrl;
-                if (fractions) {
-                  pinInCropX = fractions.x;
-                  pinInCropY = fractions.y;
+              if (captureResult?.dataUrl) {
+                pinContextImageDataUrl = captureResult.dataUrl;
+                if (captureResult.fractions) {
+                  pinInCropX = captureResult.fractions.x;
+                  pinInCropY = captureResult.fractions.y;
                 }
               }
             } catch (err) {
               console.warn("[review-viewer] live pin capture failed:", err);
+            } finally {
+              pendingCaptureRef.current = null;
             }
           } else if (websiteHasStaticReadyImage && displayRevision?.id) {
             try {
@@ -1188,6 +1211,7 @@ export function ReviewViewer({
     setPendingAnnotation(null);
     setPendingAnnotationId(null);
     setPendingLiveAnchor(null);
+    pendingCaptureRef.current = null;
     setSelectedAnnotationId(null);
     setNewComment("");
     clearComposeStaged();
