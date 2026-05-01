@@ -231,6 +231,7 @@ export async function POST(request: NextRequest) {
     });
 
     let savedScreenshotContextPath: string | null = null;
+    let savedScreenshotContextDataUrl: string | null = null;
     let savedPinInCropX: number | null = null;
     let savedPinInCropY: number | null = null;
 
@@ -317,6 +318,11 @@ export async function POST(request: NextRequest) {
           },
           select: { id: true },
         });
+        savedScreenshotContextDataUrl = pinContextImageDataUrl;
+        if (hasCropCoords) {
+          savedPinInCropX = pinInCropX;
+          savedPinInCropY = pinInCropY;
+        }
       } catch (e) {
         console.warn(
           "comments POST: failed to attach screenshotContextDataUrl",
@@ -359,6 +365,7 @@ export async function POST(request: NextRequest) {
       {
         thread: fullThread,
         screenshotContextPath: savedScreenshotContextPath,
+        screenshotContextDataUrl: savedScreenshotContextDataUrl,
         pinInCropX: savedPinInCropX,
         pinInCropY: savedPinInCropY,
       },

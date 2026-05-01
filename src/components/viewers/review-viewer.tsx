@@ -1108,13 +1108,19 @@ export function ReviewViewer({
         }
         throw new Error(msg);
       }
-      const { thread, screenshotContextPath, pinInCropX: resPicX, pinInCropY: resPicY } =
-        commentPayload as {
-          thread: CommentThread;
-          screenshotContextPath?: string | null;
-          pinInCropX?: number | null;
-          pinInCropY?: number | null;
-        };
+      const {
+        thread,
+        screenshotContextPath,
+        screenshotContextDataUrl,
+        pinInCropX: resPicX,
+        pinInCropY: resPicY,
+      } = commentPayload as {
+        thread: CommentThread;
+        screenshotContextPath?: string | null;
+        screenshotContextDataUrl?: string | null;
+        pinInCropX?: number | null;
+        pinInCropY?: number | null;
+      };
       setThreads((prev) => [thread, ...prev]);
       setAnnotations((prev) =>
         prev.map((a) =>
@@ -1125,6 +1131,9 @@ export function ReviewViewer({
                 commentThread: { id: thread.id, status: thread.status },
                 ...(screenshotContextPath
                   ? { screenshotContextPath }
+                  : {}),
+                ...(screenshotContextDataUrl
+                  ? { screenshotContextDataUrl }
                   : {}),
                 ...(resPicX != null &&
                 resPicY != null &&
@@ -1141,7 +1150,7 @@ export function ReviewViewer({
       clearComposeStaged();
       setSelectedAnnotationId(null);
       toast.success("Comment posted");
-      if (wantedPinSnapshot && !screenshotContextPath) {
+      if (wantedPinSnapshot && !screenshotContextPath && !screenshotContextDataUrl) {
         toast.message(
           "Pin location snapshot wasn’t saved. If the page or image was still loading, wait a moment and try again."
         );
