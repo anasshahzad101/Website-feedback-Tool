@@ -873,6 +873,10 @@ export function ReviewViewer({
     // screenshot reflects what the user was looking at when they clicked.
     const iframe = websiteLiveIframeRef.current;
     if (iframe) {
+      // Show capture-in-progress toast immediately so user knows it ran.
+      const inFlightId = toast.loading("Capturing pin snapshot…", {
+        duration: 30000,
+      });
       pendingCaptureRef.current = (async () => {
         const t0 =
           typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -889,27 +893,33 @@ export function ReviewViewer({
             payload.docY,
           );
           if (!dataUrl) {
-            toast.message(
-              `Snapshot capture returned no image (took ${dt}ms — see console)`,
+            toast.error(
+              `Snapshot capture returned NO image (took ${dt}ms — see Console for [captureIframeViewport] log)`,
+              { id: inFlightId, duration: 8000 },
             );
           } else {
             const kb = Math.round(dataUrl.length / 1024);
-            console.info(
-              `[captureIframeViewport] ok: ${kb}KB in ${dt}ms, fractions=`,
-              fractions,
+            toast.success(
+              `Snapshot captured (${kb}KB in ${dt}ms)`,
+              { id: inFlightId, duration: 4000 },
             );
           }
           return { dataUrl, fractions };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           console.error("[captureIframeViewport] threw:", err);
-          toast.error(`Snapshot capture threw: ${msg.slice(0, 120)}`);
+          toast.error(`Snapshot capture threw: ${msg.slice(0, 200)}`, {
+            id: inFlightId,
+            duration: 12000,
+          });
           return { dataUrl: null, fractions: null };
         }
       })();
     } else {
       pendingCaptureRef.current = null;
-      toast.message("Snapshot capture skipped — iframe not ready");
+      toast.error("Snapshot capture skipped — iframe ref is null", {
+        duration: 8000,
+      });
     }
   }, []);
 
@@ -1014,7 +1024,7 @@ export function ReviewViewer({
             try {
               const captureResult = await withTimeout(
                 pendingCaptureRef.current ?? Promise.resolve(null),
-                15000,
+                30000,
               );
               if (captureResult?.dataUrl) {
                 pinContextImageDataUrl = captureResult.dataUrl;
@@ -1022,6 +1032,13 @@ export function ReviewViewer({
                   pinInCropX = captureResult.fractions.x;
                   pinInCropY = captureResult.fractions.y;
                 }
+                console.log(
+                  `[review-viewer] using captured snapshot (${Math.round(captureResult.dataUrl.length / 1024)}KB)`,
+                );
+              } else {
+                console.warn(
+                  "[review-viewer] no captured snapshot available at submit time",
+                );
               }
             } catch (err) {
               console.warn("[review-viewer] live pin capture failed:", err);

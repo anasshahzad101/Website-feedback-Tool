@@ -16,29 +16,50 @@ import html2canvas from "html2canvas";
 export async function captureIframeViewport(
   iframe: HTMLIFrameElement | null,
 ): Promise<string | null> {
-  if (typeof window === "undefined") return null;
-  if (!iframe) return null;
+  if (typeof window === "undefined") {
+    console.warn("[captureIframeViewport] no window (SSR?)");
+    return null;
+  }
+  if (!iframe) {
+    console.warn("[captureIframeViewport] iframe ref is null");
+    return null;
+  }
   const win = iframe.contentWindow;
   const doc = iframe.contentDocument;
-  if (!win || !doc || !doc.body) return null;
+  if (!win) {
+    console.warn("[captureIframeViewport] iframe.contentWindow is null");
+    return null;
+  }
+  if (!doc) {
+    console.warn("[captureIframeViewport] iframe.contentDocument is null (cross-origin block?)");
+    return null;
+  }
+  if (!doc.body) {
+    console.warn("[captureIframeViewport] iframe doc has no body yet");
+    return null;
+  }
   try {
     const scrollX = win.scrollX || 0;
     const scrollY = win.scrollY || 0;
     const vw = win.innerWidth;
     const vh = win.innerHeight;
-    if (vw <= 0 || vh <= 0) return null;
-    const docW =
-      doc.documentElement.scrollWidth || doc.body.scrollWidth || vw;
-    const docH =
-      doc.documentElement.scrollHeight || doc.body.scrollHeight || vh;
+    if (vw <= 0 || vh <= 0) {
+      console.warn("[captureIframeViewport] zero viewport dims", { vw, vh });
+      return null;
+    }
+    console.log("[captureIframeViewport] starting html2canvas", {
+      scrollX,
+      scrollY,
+      vw,
+      vh,
+      bodyChildren: doc.body.children.length,
+    });
 
     const canvas = await html2canvas(doc.body, {
       x: scrollX,
       y: scrollY,
       width: vw,
       height: vh,
-      windowWidth: docW,
-      windowHeight: docH,
       // Allow tainted canvas — better to get a partial screenshot with
       // missing cross-origin images than no screenshot at all.
       allowTaint: true,
@@ -47,13 +68,20 @@ export async function captureIframeViewport(
       scale: 1,
       // Skip embedded iframes (chat widgets, ads). They're cross-origin
       // and html2canvas can't read them anyway; trying just adds latency.
-      ignoreElements: (el) => el.tagName === "IFRAME",
+      ignoreElements: (el) =>
+        el.tagName === "IFRAME" || el.tagName === "SCRIPT",
       logging: false,
+      // Use foreignObject rendering when supported — much faster than
+      // html2canvas's full DOM walk, less likely to choke on complex CSS.
+      foreignObjectRendering: true,
     });
-    return canvas.toDataURL("image/png");
+    const dataUrl = canvas.toDataURL("image/png");
+    console.log(
+      `[captureIframeViewport] html2canvas ok: ${Math.round(dataUrl.length / 1024)}KB`,
+    );
+    return dataUrl;
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn("[captureIframeViewport] html2canvas failed:", e);
+    console.error("[captureIframeViewport] html2canvas threw:", e);
     return null;
   }
 }
