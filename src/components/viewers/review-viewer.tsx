@@ -362,12 +362,17 @@ export function ReviewViewer({
     reviewItem.uploadedFilePath;
 
   const isWebsite = reviewItem.type === "WEBSITE";
+  // The "static / placeholder / failed" phases describe the *screenshot* UI.
+  // In live mode we always render the iframe — even if a snapshot has been
+  // captured in the background for proxy-error fallback — so the user never
+  // sees the static image hijack their live page.
   const websiteContentPhase:
     | "static"
     | "placeholder"
     | "failed"
     | "iframe" = (() => {
     if (!isWebsite || !effectiveSourceUrl) return "iframe";
+    if (websiteViewMode !== "screenshot") return "iframe";
     if (websiteHasStaticReadyImage) return "static";
     if (websiteInCaptureWait) return "placeholder";
     if (websiteCaptureFailedUi) return "failed";
