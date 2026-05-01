@@ -167,21 +167,28 @@ export async function POST(request: NextRequest) {
 
     const accessKey = process.env.SCREENSHOTONE_ACCESS_KEY?.trim();
     if (!accessKey) {
-      console.error("[capture-website-screenshot] SCREENSHOTONE_ACCESS_KEY is not set");
+      // Snapshot capture is optional. Soft-fail with a clear DB status so the
+      // viewer's "Save snapshot" UI shows it as not-configured, but the
+      // overall flow keeps working. (Live mode does not require ScreenshotOne.)
+      console.warn(
+        "[capture-website-screenshot] SCREENSHOTONE_ACCESS_KEY not set; skipping capture"
+      );
       await db.reviewRevision.update({
         where: { id: reviewRevisionId },
         data: {
           screenshotStatus: ScreenshotCaptureStatus.FAILED,
           screenshotError: truncateMsg(
-            "Server misconfiguration: SCREENSHOTONE_ACCESS_KEY is missing",
+            "Snapshot capture is not configured (SCREENSHOTONE_ACCESS_KEY missing).",
             500
           ),
         },
       });
-      return NextResponse.json(
-        { status: "FAILED" as const, error: "Screenshot service not configured" },
-        { status: 500 }
-      );
+      lockedRevisionId = null;
+      return NextResponse.json({
+        status: "FAILED" as const,
+        error: "Snapshot capture is not configured",
+        skipped: "screenshotone-not-configured",
+      });
     }
 
     const logUrl = urlRaw.length > 100 ? `${urlRaw.slice(0, 100)}…` : urlRaw;

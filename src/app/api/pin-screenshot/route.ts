@@ -164,11 +164,17 @@ export async function POST(request: NextRequest) {
 
     const accessKey = process.env.SCREENSHOTONE_ACCESS_KEY?.trim();
     if (!accessKey) {
-      console.error("[pin-screenshot] SCREENSHOTONE_ACCESS_KEY is not set");
-      return NextResponse.json(
-        { error: "Server misconfiguration: SCREENSHOTONE_ACCESS_KEY is missing" },
-        { status: 500 }
+      // Soft-fail: caller already handles a missing context screenshot
+      // (comment thread saves without one). Better than a 500 in the console.
+      console.warn(
+        "[pin-screenshot] SCREENSHOTONE_ACCESS_KEY not set; skipping capture"
       );
+      return NextResponse.json({
+        screenshotContextPath: null,
+        pinInCropX: null,
+        pinInCropY: null,
+        skipped: "screenshotone-not-configured",
+      });
     }
 
     const logUrl = urlRaw.length > 100 ? `${urlRaw.slice(0, 100)}…` : urlRaw;
@@ -309,11 +315,15 @@ export async function POST(request: NextRequest) {
     const dataUrl = `data:image/png;base64,${croppedBuffer.toString("base64")}`;
     const saved = await saveContextPngFromBase64(dataUrl);
     if (!saved.ok) {
-      console.error("[pin-screenshot] saveContextPngFromBase64:", saved.error);
-      return NextResponse.json(
-        { error: saved.error || "Failed to save screenshot" },
-        { status: 500 }
-      );
+      // Read-only filesystem (Vercel etc.) — fall back to "no thumbnail"
+      // instead of 500. Comment threads don't require a context image.
+      console.warn("[pin-screenshot] saveContextPngFromBase64 soft-failed:", saved.error);
+      return NextResponse.json({
+        screenshotContextPath: null,
+        pinInCropX: null,
+        pinInCropY: null,
+        skipped: "filesystem-readonly",
+      });
     }
 
     return NextResponse.json({

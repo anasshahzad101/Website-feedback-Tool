@@ -29,8 +29,15 @@ export async function saveContextPngFromBase64(
     "uploads",
     "screenshots"
   );
-  await fs.mkdir(uploadsDir, { recursive: true });
   const filename = `context-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
-  await fs.writeFile(path.join(uploadsDir, filename), buf);
+  try {
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.writeFile(path.join(uploadsDir, filename), buf);
+  } catch (e) {
+    // Read-only filesystems (Vercel, some serverless hosts) reject writes.
+    // Surface as a soft failure so callers can degrade gracefully instead of 500-ing.
+    const message = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: `Filesystem write failed: ${message}` };
+  }
   return { ok: true, relativePath: `/screenshots/${filename}` };
 }
